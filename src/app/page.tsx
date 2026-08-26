@@ -185,12 +185,11 @@ export default function Home() {
       }
 
       if (!isFinite(duration) || duration < 3) duration = 30;
-      if (duration > 180) {
-        // cap for browser WASM performance
-        duration = 180;
-        setStatus("Nhạc dài >180s — cắt còn 180s để render ổn định...");
+      if (duration > 120) {
+        duration = 120;
+        setStatus("Nhạc dài >120s — cắt còn 120s để render siêu nhanh...");
       } else {
-        setStatus(`Độ dài nhạc: ${duration.toFixed(1)}s — đang đọc video nền...`);
+        setStatus(`Độ dài nhạc: ${duration.toFixed(1)}s — render 720p nhanh...`);
       }
 
       await ffmpeg.writeFile("music.mp3", musicData);
@@ -250,18 +249,18 @@ export default function Home() {
       const artistEsc = esc(artist || "");
 
       setStatus(
-        `Render 1920×1080 (nền ~${startTime.toFixed(1)}s, dài ${duration.toFixed(1)}s)...`
+        `Render nhanh 1280×720 (nền ~${startTime.toFixed(1)}s, dài ${duration.toFixed(1)}s)...`
       );
 
       const runEncode = async (withText: boolean) => {
         const vfBase =
-          "[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1";
+          "[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=30";
         let filter: string;
         if (withText && hasFont) {
           filter =
             vfBase +
-            `,drawtext=fontfile=/font.ttf:text='${titleEsc}':fontcolor=white:fontsize=52:borderw=3:bordercolor=black@0.8:x=(w-text_w)/2:y=h*0.38` +
-            `,drawtext=fontfile=/font.ttf:text='${artistEsc}':fontcolor=white:fontsize=28:borderw=2:bordercolor=black@0.7:x=(w-text_w)/2:y=h*0.48[v]`;
+            `,drawtext=fontfile=/font.ttf:text='${titleEsc}':fontcolor=white:fontsize=40:borderw=3:bordercolor=black@0.8:x=(w-text_w)/2:y=h*0.38` +
+            `,drawtext=fontfile=/font.ttf:text='${artistEsc}':fontcolor=white:fontsize=22:borderw=2:bordercolor=black@0.7:x=(w-text_w)/2:y=h*0.48[v]`;
         } else {
           filter = vfBase + "[v]";
         }
@@ -285,16 +284,22 @@ export default function Home() {
           "libx264",
           "-preset",
           "ultrafast",
+          "-tune",
+          "fastdecode",
           "-crf",
-          "28",
+          "32",
           "-pix_fmt",
           "yuv420p",
+          "-threads",
+          "0",
           "-c:a",
           "aac",
           "-b:a",
-          "128k",
+          "96k",
           "-ar",
           "44100",
+          "-ac",
+          "2",
           "-shortest",
           "-movflags",
           "+faststart",
@@ -341,7 +346,7 @@ export default function Home() {
       }
 
       setOutputUrl(URL.createObjectURL(videoBlob));
-      setStatus("✅ Hoàn thành! Video 1920×1080 đã sẵn sàng.");
+      setStatus("✅ Hoàn thành! Video 720p ngang (1280×720) — render nhanh.");
       setProgress(100);
     } catch (err: any) {
       console.error(err);
@@ -412,10 +417,6 @@ export default function Home() {
     a.click();
   };
 
-  const copyCaption = () => {
-    navigator.clipboard.writeText(caption);
-    setStatus("Đã copy caption!");
-  };
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
@@ -520,7 +521,7 @@ export default function Home() {
             </h2>
             <p className="text-sm text-gray-400 mb-3">
               Upload video nền. Hệ thống cắt đoạn ngẫu nhiên có độ dài = nhạc, mute tiếng gốc, xuất{" "}
-              <strong>1920×1080 ngang</strong>.
+              <strong>1280×720 (720p ngang)</strong> — render tối ưu tốc độ.
             </p>
             <input
               ref={bgInputRef}
@@ -614,6 +615,13 @@ export default function Home() {
                 </div>
 
                 <div className="mt-4 space-y-2 border-t border-[#333] pt-4">
+                  <label className="block text-sm text-gray-400">Caption auto (khi đăng TikTok)</label>
+                  <textarea
+                    value={caption}
+                    onChange={(e) => setCaption(e.target.value)}
+                    rows={3}
+                    className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#ff0050] resize-none"
+                  />
                   <label className="block text-sm text-gray-400">
                     Cookie TikTok (bắt buộc có <code className="text-pink-400">sessionid</code>)
                   </label>
@@ -646,26 +654,7 @@ export default function Home() {
             )}
           </section>
 
-          <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-[#ff0050] text-xs flex items-center justify-center">
-                3
-              </span>
-              Caption & Hashtag (TikTok)
-            </h2>
-            <textarea
-              value={caption}
-              onChange={(e) => setCaption(e.target.value)}
-              rows={5}
-              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050] transition resize-none text-sm"
-            />
-            <button
-              onClick={copyCaption}
-              className="mt-3 w-full py-2.5 rounded-xl bg-[#262626] hover:bg-[#333] text-sm font-medium transition"
-            >
-              Copy Caption
-            </button>
-          </section>
+          
 
           {thumbnailUrl && (
             <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
@@ -681,7 +670,7 @@ export default function Home() {
       </main>
 
       <footer className="border-t border-[#262626] mt-12 py-6 text-center text-sm text-gray-500">
-        Ontop Media Music • Upload nền + nhạc • 1920×1080 • FFmpeg.wasm
+        Ontop Media Music • Upload nền + nhạc • 720p nhanh • FFmpeg.wasm
       </footer>
     </div>
   );
