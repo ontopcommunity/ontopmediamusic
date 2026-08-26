@@ -11,6 +11,9 @@ const BG_VIDEOS = [
   "https://v16-notes.tiktokcdn-us.com/ad159788b9bff3ce14a8613481e839b8/6a8ec124/video/tos/useast2a/tos-useast2a-ve-68c810-euttp/o8HE14iWQszCkO8B9hXDfFiVskAFuxHgxfBpIV/?a=0&bti=OTg7QGo5QHM6OjZALTAzYCMvcCMxNDNg&&bt=1115&ft=kurKSyt4ZZo0PD-a9B3aQ9ZifKA6JE.C~&mime_type=video_mp4&rc=ZzZnOWQ0aTQ7ZmRmMztkaEBpanhlNXM5cjw6OjMzbzgzNUAwMmAwMV5fNl4xLzUxNC9iYSNsL2tvMmQ0amxhLS1kLzFzcw%3D%3D&vvpl=1&l=2026082603362015474D37856B4715552E&btag=e000a8000",
 ];
 
+// Proxy helper to bypass CORS
+const proxyUrl = (url: string) => `/api/proxy?url=${encodeURIComponent(url)}`;
+
 export default function Home() {
   const [songTitle, setSongTitle] = useState("Phía Sau Một Cô Gái");
   const [artist, setArtist] = useState("Đại Ngố Remix - NTP Vinahouse");
@@ -36,7 +39,7 @@ export default function Home() {
         ffmpegRef.current = ffmpeg;
 
         ffmpeg.on("log", ({ message }) => {
-          console.log(message);
+          console.log("[ffmpeg]", message);
         });
         ffmpeg.on("progress", ({ progress }) => {
           setProgress(Math.round(progress * 100));
@@ -69,8 +72,7 @@ export default function Home() {
         "#vietmix",
         "#daingot",
       ];
-      const cap = `${songTitle} - ${artist}\n\n${tags.join(" ")}`;
-      setCaption(cap);
+      setCaption(`${songTitle} - ${artist}\n\n${tags.join(" ")}`);
     }
   }, [songTitle, artist]);
 
@@ -94,18 +96,20 @@ export default function Home() {
     const ffmpeg = ffmpegRef.current;
 
     try {
-      setStatus("Đang tải nhạc...");
+      // ===== 1. MUSIC =====
+      setStatus("Đang tải nhạc (qua proxy)...");
       let musicData: Uint8Array;
       if (musicFile) {
         musicData = await fetchFile(musicFile);
       } else {
-        const res = await fetch(musicUrl);
-        if (!res.ok) throw new Error("Không tải được nhạc từ link");
+        const res = await fetch(proxyUrl(musicUrl));
+        if (!res.ok) throw new Error(`Không tải được nhạc: ${res.status}`);
         const blob = await res.blob();
         musicData = await fetchFile(blob);
       }
       await ffmpeg.writeFile("music.mp3", musicData);
 
+      // Duration via Audio element
       setStatus("Đang phân tích độ dài nhạc...");
       let duration = 30;
       try {
@@ -113,62 +117,75 @@ export default function Home() {
         if (musicFile) {
           audio.src = URL.createObjectURL(musicFile);
         } else {
-          audio.src = musicUrl;
+          // Use proxy for metadata too
+          audio.src = proxyUrl(musicUrl);
         }
         await new Promise((resolve, reject) => {
           audio.onloadedmetadata = () => {
             duration = audio.duration;
             resolve(null);
           };
-          audio.onerror = reject;
-          setTimeout(() => reject(new Error("timeout")), 10000);
+          audio.onerror = () => reject(new Error("Audio metadata fail"));
+          setTimeout(() => reject(new Error("timeout")), 15000);
         });
-      } catch {
+      } catch (e) {
+        console.warn("Duration fallback", e);
         duration = 45;
       }
       if (!isFinite(duration) || duration < 5) duration = 30;
-      setStatus(`Độ dài nhạc: ${duration.toFixed(1)}s`);
+      setStatus(`Độ dài nhạc: ${duration.toFixed(1)} giây`);
 
+      // ===== 2. BACKGROUND VIDEO (via proxy) =====
       const bgUrl = BG_VIDEOS[Math.floor(Math.random() * BG_VIDEOS.length)];
-      setStatus("Đang tải video nền...");
+      setStatus("Đang tải video nền qua proxy (bắt buộc CORS)...");
 
-      let bgData: Uint8Array;
-      try {
-        const bgRes = await fetch(bgUrl, { mode: "cors" });
-        if (!bgRes.ok) throw new Error("CORS or fail");
-        const bgBlob = await bgRes.blob();
-        bgData = await fetchFile(bgBlob);
-      } catch (e) {
-        console.warn("BG fetch failed, using fallback", e);
-        const fallback = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
-        const fbRes = await fetch(fallback);
-        bgData = await fetchFile(await fbRes.blob());
-        setStatus("Dùng video nền fallback (CDN TikTok CORS)");
+      const bgRes = await fetch(proxyUrl(bgUrl));
+      if (!bgRes.ok) {
+        throw new Error(`Không tải được video nền: ${bgRes.status}. Proxy có thể bị giới hạn kích thước.`);
       }
+      const bgBlob = await bgRes.blob();
+      const bgData = await fetchFile(bgBlob);
       await ffmpeg.writeFile("bg.mp4", bgData);
 
-      const startTime = Math.floor(Math.random() * 30);
+      // Random start (safe range for long videos)
+      const startTime = Math.floor(Math.random() * 45);
 
-      setStatus("Đang render video (mute nền + nhạc + text)...");
+      setStatus("Đang render video ngang (1920x1080) + mute nền + nhạc + text...");
 
-      const titleEsc = songTitle.replace(/:/g, "\\:").replace(/'/g, "").replace(/"/g, "");
-      const artistEsc = artist.replace(/:/g, "\\:").replace(/'/g, "").replace(/"/g, "");
+      // Escape text for drawtext
+      const titleEsc = songTitle
+        .replace(/\\/g, "\\\\")
+        .replace(/:/g, "\\:")
+        .replace(/'/g, "")
+        .replace(/"/g, "")
+        .replace(/%/g, "");
+      const artistEsc = artist
+        .replace(/\\/g, "\\\\")
+        .replace(/:/g, "\\:")
+        .replace(/'/g, "")
+        .replace(/"/g, "")
+        .replace(/%/g, "");
 
+      // Landscape 1920x1080 - style giống video mẫu (nằm ngang)
       await ffmpeg.exec([
         "-ss", String(startTime),
         "-t", String(duration),
         "-i", "bg.mp4",
         "-i", "music.mp3",
         "-filter_complex",
-        `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,drawtext=text='${titleEsc}':fontcolor=white:fontsize=48:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h*0.35,drawtext=text='${artistEsc}':fontcolor=white:fontsize=28:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h*0.42[v]`,
+        `[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,` +
+        `drawtext=text='${titleEsc}':fontcolor=white:fontsize=56:borderw=4:bordercolor=black@0.8:x=(w-text_w)/2:y=h*0.38,` +
+        `drawtext=text='${artistEsc}':fontcolor=white:fontsize=32:borderw=3:bordercolor=black@0.7:x=(w-text_w)/2:y=h*0.48[v]`,
         "-map", "[v]",
         "-map", "1:a",
         "-c:v", "libx264",
         "-preset", "ultrafast",
-        "-crf", "28",
+        "-crf", "26",
         "-c:a", "aac",
-        "-b:a", "128k",
+        "-b:a", "192k",
+        "-ar", "44100",
         "-shortest",
+        "-movflags", "+faststart",
         "-y",
         "output.mp4",
       ]);
@@ -176,9 +193,11 @@ export default function Home() {
       setStatus("Đang tạo thumbnail...");
       await ffmpeg.exec([
         "-i", "output.mp4",
-        "-ss", "1",
+        "-ss", "1.5",
         "-vframes", "1",
-        "-y", "thumb.jpg",
+        "-q:v", "2",
+        "-y",
+        "thumb.jpg",
       ]);
 
       const outputData = await ffmpeg.readFile("output.mp4");
@@ -189,11 +208,11 @@ export default function Home() {
 
       setOutputUrl(URL.createObjectURL(videoBlob));
       setThumbnailUrl(URL.createObjectURL(thumbBlob));
-      setStatus("Hoàn thành! Video đã sẵn sàng.");
+      setStatus("✅ Hoàn thành! Video nằm ngang (1920x1080) đã sẵn sàng.");
       setProgress(100);
     } catch (err: any) {
       console.error(err);
-      setError(err?.message || "Lỗi khi tạo video. Có thể do CORS hoặc file lớn.");
+      setError(err?.message || "Lỗi khi tạo video.");
       setStatus("Thất bại");
     } finally {
       setIsLoading(false);
@@ -204,7 +223,7 @@ export default function Home() {
     if (!outputUrl) return;
     const a = document.createElement("a");
     a.href = outputUrl;
-    a.download = `${songTitle.replace(/\s+/g, "_")}_vinahouse.mp4`;
+    a.download = `${songTitle.replace(/\s+/g, "_")}_vinahouse_landscape.mp4`;
     a.click();
   };
 
@@ -223,7 +242,7 @@ export default function Home() {
             </div>
             <div>
               <h1 className="text-xl font-bold tracking-tight">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400">Auto Video Generator • Vinahouse Style</p>
+              <p className="text-xs text-gray-400">Auto Video Generator • Vinahouse Style • Landscape</p>
             </div>
           </div>
           <div className="text-sm text-gray-400">
@@ -295,15 +314,15 @@ export default function Home() {
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <span className="w-6 h-6 rounded-full bg-[#ff0050] text-xs flex items-center justify-center">2</span>
-              Video nền
+              Video nền (Nằm ngang 1920×1080)
             </h2>
             <p className="text-sm text-gray-400 mb-3">
-              Hệ thống chọn ngẫu nhiên 1 trong 4 video đêm mưa, cắt đoạn ngẫu nhiên có độ dài = nhạc, mute tiếng gốc.
+              Hệ thống dùng <strong>proxy server</strong> để vượt CORS, chọn ngẫu nhiên 1 trong 4 video đêm mưa, cắt đoạn ngẫu nhiên có độ dài = nhạc, mute tiếng gốc.
             </p>
             <div className="grid grid-cols-2 gap-2">
               {BG_VIDEOS.map((_, i) => (
                 <div key={i} className="aspect-video bg-[#0a0a0a] border border-[#333] rounded-lg flex items-center justify-center text-xs text-gray-500">
-                  BG #{i + 1}
+                  BG #{i + 1} • Landscape
                 </div>
               ))}
             </div>
@@ -323,7 +342,7 @@ export default function Home() {
                 Đang tạo... {progress}%
               </>
             ) : (
-              "Tạo Video Ngay"
+              "Tạo Video Nằm Ngang Ngay"
             )}
           </button>
 
@@ -341,13 +360,13 @@ export default function Home() {
 
         <div className="space-y-6">
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
-            <h2 className="text-lg font-semibold mb-4">Preview Video</h2>
+            <h2 className="text-lg font-semibold mb-4">Preview Video (Landscape)</h2>
             {outputUrl ? (
               <div className="space-y-4">
                 <video
                   src={outputUrl}
                   controls
-                  className="w-full rounded-xl bg-black aspect-[9/16] max-h-[420px] object-contain mx-auto"
+                  className="w-full rounded-xl bg-black aspect-video max-h-[360px] object-contain mx-auto"
                 />
                 <div className="flex gap-3">
                   <button
@@ -368,8 +387,8 @@ export default function Home() {
                 </div>
               </div>
             ) : (
-              <div className="aspect-[9/16] max-h-[420px] bg-[#0a0a0a] rounded-xl border border-dashed border-[#333] flex items-center justify-center text-gray-500">
-                Video sẽ hiện ở đây sau khi tạo
+              <div className="aspect-video max-h-[360px] bg-[#0a0a0a] rounded-xl border border-dashed border-[#333] flex items-center justify-center text-gray-500">
+                Video nằm ngang sẽ hiện ở đây
               </div>
             )}
           </section>
@@ -392,8 +411,7 @@ export default function Home() {
               Copy Caption
             </button>
             <p className="mt-3 text-xs text-gray-500">
-              * Auto-post TikTok bằng cookie không ổn định trên Vercel và dễ bị hạn chế. 
-              Khuyến nghị tải video + copy caption rồi đăng thủ công.
+              * Auto-post TikTok bằng cookie không ổn định trên Vercel. Khuyến nghị tải video + copy caption rồi đăng thủ công.
             </p>
           </section>
 
@@ -407,7 +425,7 @@ export default function Home() {
       </main>
 
       <footer className="border-t border-[#262626] mt-12 py-6 text-center text-sm text-gray-500">
-        Ontop Media Music • Built for Vinahouse Auto Video • Deploy on Vercel
+        Ontop Media Music • Landscape 1920×1080 • CORS Proxy enabled • Vercel
       </footer>
     </div>
   );
