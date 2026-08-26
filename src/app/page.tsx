@@ -146,20 +146,20 @@ export default function Home() {
 
     const ffmpeg = ffmpegRef.current;
 
+    const safeDelete = async (name: string) => {
+      try {
+        await ffmpeg.deleteFile(name);
+      } catch {
+        /* ignore */
+      }
+    };
+
     try {
-      // Clean previous files if any
-      try {
-        await ffmpeg.deleteFile("bg.mp4");
-      } catch {}
-      try {
-        await ffmpeg.deleteFile("music.mp3");
-      } catch {}
-      try {
-        await ffmpeg.deleteFile("output.mp4");
-      } catch {}
-      try {
-        await ffmpeg.deleteFile("thumb.jpg");
-      } catch {}
+      await safeDelete("bg.mp4");
+      await safeDelete("music.mp3");
+      await safeDelete("output.mp4");
+      await safeDelete("thumb.jpg");
+      await safeDelete("font.ttf");
 
       // ===== MUSIC =====
       setStatus("Đang tải nhạc...");
@@ -171,107 +171,189 @@ export default function Home() {
         duration = await getAudioDuration(musicFile);
       } else {
         const res = await fetch(proxyUrl(musicUrl));
-        if (!res.ok) throw new Error(`Không tải được nhạc từ link (${res.status}). Thử upload file nhạc.`);
+        if (!res.ok) {
+          throw new Error(
+            `Không tải được nhạc từ link (HTTP ${res.status}). Thử upload file nhạc mp3.`
+          );
+        }
         const blob = await res.blob();
+        if (blob.size < 1000) {
+          throw new Error("File nhạc tải về quá nhỏ / không hợp lệ. Kiểm tra link hoặc upload file.");
+        }
         musicData = await fetchFile(blob);
         duration = await getAudioDuration(proxyUrl(musicUrl));
       }
 
       if (!isFinite(duration) || duration < 3) duration = 30;
-      setStatus(`Độ dài nhạc: ${duration.toFixed(1)}s — đang đọc video nền...`);
+      if (duration > 180) {
+        // cap for browser WASM performance
+        duration = 180;
+        setStatus("Nhạc dài >180s — cắt còn 180s để render ổn định...");
+      } else {
+        setStatus(`Độ dài nhạc: ${duration.toFixed(1)}s — đang đọc video nền...`);
+      }
 
       await ffmpeg.writeFile("music.mp3", musicData);
 
-      // ===== BACKGROUND (uploaded file) =====
+      // ===== BACKGROUND =====
+      if (bgFile.size > 80 * 1024 * 1024) {
+        throw new Error(
+          `Video nền ${(bgFile.size / 1024 / 1024).toFixed(1)}MB quá lớn. Hãy dùng file < 50–80MB.`
+        );
+      }
       const bgData = await fetchFile(bgFile);
       await ffmpeg.writeFile("bg.mp4", bgData);
 
       const bgDuration = await getVideoDuration(bgFile);
-      // Random start: leave enough room for music length
       const maxStart = Math.max(0, bgDuration - duration - 0.5);
       const startTime = maxStart > 1 ? Math.random() * maxStart : 0;
 
+      // ===== FONT for drawtext (required by ffmpeg.wasm) =====
+      setStatus("Đang tải font chữ...");
+      let hasFont = false;
+      try {
+        const fontUrls = [
+          "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+          "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+        ];
+        let fontBin: Uint8Array | null = null;
+        for (const fu of fontUrls) {
+          try {
+            const fr = await fetch(fu);
+            if (fr.ok) {
+              fontBin = await fetchFile(await fr.blob());
+              break;
+            }
+          } catch {
+            /* try next */
+          }
+        }
+        if (fontBin && fontBin.length > 1000) {
+          await ffmpeg.writeFile("font.ttf", fontBin);
+          hasFont = true;
+        }
+      } catch (fe) {
+        console.warn("Font load failed", fe);
+      }
+
+      // Escape for drawtext
+      const esc = (s: string) =>
+        s
+          .replace(/\\/g, "\\\\")
+          .replace(/:/g, "\\:")
+          .replace(/'/g, "")
+          .replace(/"/g, "")
+          .replace(/%/g, "")
+          .replace(/\n/g, " ")
+          .slice(0, 80);
+      const titleEsc = esc(songTitle || "Untitled");
+      const artistEsc = esc(artist || "");
+
       setStatus(
-        `Render video ngang 1920×1080 (bắt đầu nền ~${startTime.toFixed(1)}s, dài ${duration.toFixed(1)}s)...`
+        `Render 1920×1080 (nền ~${startTime.toFixed(1)}s, dài ${duration.toFixed(1)}s)...`
       );
 
-      const titleEsc = songTitle
-        .replace(/\\/g, "\\\\")
-        .replace(/:/g, "\\:")
-        .replace(/'/g, "")
-        .replace(/"/g, "")
-        .replace(/%/g, "");
-      const artistEsc = artist
-        .replace(/\\/g, "\\\\")
-        .replace(/:/g, "\\:")
-        .replace(/'/g, "")
-        .replace(/"/g, "")
-        .replace(/%/g, "");
+      const runEncode = async (withText: boolean) => {
+        const vfBase =
+          "[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1";
+        let filter: string;
+        if (withText && hasFont) {
+          filter =
+            vfBase +
+            `,drawtext=fontfile=/font.ttf:text='${titleEsc}':fontcolor=white:fontsize=52:borderw=3:bordercolor=black@0.8:x=(w-text_w)/2:y=h*0.38` +
+            `,drawtext=fontfile=/font.ttf:text='${artistEsc}':fontcolor=white:fontsize=28:borderw=2:bordercolor=black@0.7:x=(w-text_w)/2:y=h*0.48[v]`;
+        } else {
+          filter = vfBase + "[v]";
+        }
 
-      // Landscape, mute bg, overlay music, text
-      await ffmpeg.exec([
-        "-ss",
-        String(startTime),
-        "-t",
-        String(duration),
-        "-i",
-        "bg.mp4",
-        "-i",
-        "music.mp3",
-        "-filter_complex",
-        `[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,` +
-          `drawtext=text='${titleEsc}':fontcolor=white:fontsize=56:borderw=4:bordercolor=black@0.8:x=(w-text_w)/2:y=h*0.38,` +
-          `drawtext=text='${artistEsc}':fontcolor=white:fontsize=32:borderw=3:bordercolor=black@0.7:x=(w-text_w)/2:y=h*0.48[v]`,
-        "-map",
-        "[v]",
-        "-map",
-        "1:a",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-crf",
-        "26",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-ar",
-        "44100",
-        "-shortest",
-        "-movflags",
-        "+faststart",
-        "-y",
-        "output.mp4",
-      ]);
+        await ffmpeg.exec([
+          "-ss",
+          String(startTime),
+          "-t",
+          String(duration),
+          "-i",
+          "bg.mp4",
+          "-i",
+          "music.mp3",
+          "-filter_complex",
+          filter,
+          "-map",
+          "[v]",
+          "-map",
+          "1:a?",
+          "-c:v",
+          "libx264",
+          "-preset",
+          "ultrafast",
+          "-crf",
+          "28",
+          "-pix_fmt",
+          "yuv420p",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "128k",
+          "-ar",
+          "44100",
+          "-shortest",
+          "-movflags",
+          "+faststart",
+          "-y",
+          "output.mp4",
+        ]);
+      };
+
+      try {
+        await runEncode(true);
+      } catch (e1: any) {
+        console.warn("Encode with text failed, retry without text", e1);
+        setStatus("Render không dùng text overlay (fallback)...");
+        await safeDelete("output.mp4");
+        await runEncode(false);
+      }
 
       setStatus("Đang tạo thumbnail...");
-      await ffmpeg.exec([
-        "-i",
-        "output.mp4",
-        "-ss",
-        "1",
-        "-vframes",
-        "1",
-        "-q:v",
-        "2",
-        "-y",
-        "thumb.jpg",
-      ]);
+      try {
+        await ffmpeg.exec([
+          "-i",
+          "output.mp4",
+          "-ss",
+          "0.5",
+          "-vframes",
+          "1",
+          "-q:v",
+          "3",
+          "-y",
+          "thumb.jpg",
+        ]);
+        const thumbData = await ffmpeg.readFile("thumb.jpg");
+        setThumbnailUrl(
+          URL.createObjectURL(new Blob([thumbData as BlobPart], { type: "image/jpeg" }))
+        );
+      } catch {
+        console.warn("thumbnail failed");
+      }
 
       const outputData = await ffmpeg.readFile("output.mp4");
-      const thumbData = await ffmpeg.readFile("thumb.jpg");
-
       const videoBlob = new Blob([outputData as BlobPart], { type: "video/mp4" });
-      const thumbBlob = new Blob([thumbData as BlobPart], { type: "image/jpeg" });
+      if (videoBlob.size < 1000) {
+        throw new Error("Output video rỗng — codec đầu vào có thể không hỗ trợ. Thử convert nền sang mp4 H.264.");
+      }
 
       setOutputUrl(URL.createObjectURL(videoBlob));
-      setThumbnailUrl(URL.createObjectURL(thumbBlob));
-      setStatus("✅ Hoàn thành! Video nằm ngang 1920×1080 đã sẵn sàng.");
+      setStatus("✅ Hoàn thành! Video 1920×1080 đã sẵn sàng.");
       setProgress(100);
     } catch (err: any) {
       console.error(err);
-      setError(err?.message || "Lỗi khi tạo video. Thử file nhỏ hơn hoặc định dạng mp4/mp3.");
+      const msg =
+        err?.message ||
+        err?.toString?.() ||
+        "Lỗi không xác định khi tạo video";
+      setError(
+        msg.length > 300
+          ? msg.slice(0, 300) + "…"
+          : msg + " | Thử file mp4/mp3 nhỏ hơn, hoặc tắt extension chặn CDN."
+      );
       setStatus("Thất bại");
     } finally {
       setIsLoading(false);

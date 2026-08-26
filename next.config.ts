@@ -10,9 +10,10 @@ const nextConfig: NextConfig = {
             key: "Cross-Origin-Opener-Policy",
             value: "same-origin",
           },
+          // credentialless: SharedArrayBuffer for ffmpeg.wasm without blocking CDN fonts
           {
             key: "Cross-Origin-Embedder-Policy",
-            value: "require-corp",
+            value: "credentialless",
           },
         ],
       },

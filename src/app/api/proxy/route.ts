@@ -10,7 +10,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Missing url parameter" }, { status: 400 });
   }
 
-  // Basic safety: only allow http/https and known CDNs roughly
   try {
     const parsed = new URL(url);
     if (!["http:", "https:"].includes(parsed.protocol)) {
@@ -28,7 +27,6 @@ export async function GET(req: NextRequest) {
         Accept: "*/*",
         Referer: "https://www.tiktok.com/",
       },
-      // Important for large files
       cache: "no-store",
     });
 
@@ -42,29 +40,20 @@ export async function GET(req: NextRequest) {
     const contentType = response.headers.get("content-type") || "application/octet-stream";
     const contentLength = response.headers.get("content-length");
 
-    // Stream the body
     const headers = new Headers();
     headers.set("Content-Type", contentType);
     headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("Cross-Origin-Resource-Policy", "cross-origin");
     headers.set("Cache-Control", "public, max-age=3600");
-    if (contentLength) {
-      headers.set("Content-Length", contentLength);
-    }
+    if (contentLength) headers.set("Content-Length", contentLength);
 
-    return new NextResponse(response.body, {
-      status: 200,
-      headers,
-    });
+    return new NextResponse(response.body, { status: 200, headers });
   } catch (err: any) {
     console.error("Proxy error:", err);
-    return NextResponse.json(
-      { error: err?.message || "Proxy failed" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: err?.message || "Proxy failed" }, { status: 500 });
   }
 }
 
-// Handle preflight
 export async function OPTIONS() {
   return new NextResponse(null, {
     status: 204,
@@ -72,6 +61,7 @@ export async function OPTIONS() {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
+      "Cross-Origin-Resource-Policy": "cross-origin",
     },
   });
 }
