@@ -20,6 +20,9 @@ export default function Home() {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tiktokCookies, setTiktokCookies] = useState("");
+  const [posting, setPosting] = useState(false);
+  const [postResult, setPostResult] = useState<string | null>(null);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const bgInputRef = useRef<HTMLInputElement>(null);
@@ -51,6 +54,13 @@ export default function Home() {
       }
     };
     load();
+  }, []);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("tiktok_cookies");
+      if (saved) setTiktokCookies(saved);
+    } catch {}
   }, []);
 
   useEffect(() => {
@@ -268,6 +278,50 @@ export default function Home() {
     }
   };
 
+  const postToTikTok = async () => {
+    if (!outputUrl) {
+      setPostResult("Chưa có video để đăng");
+      return;
+    }
+    if (!tiktokCookies.trim() && !confirm("Chưa nhập cookie. Vẫn thử dùng TIKTOK_COOKIES trên server?")) {
+      return;
+    }
+    setPosting(true);
+    setPostResult(null);
+    try {
+      try {
+        localStorage.setItem("tiktok_cookies", tiktokCookies);
+      } catch {}
+
+      const videoBlob = await fetch(outputUrl).then((r) => r.blob());
+      const form = new FormData();
+      form.append("video", videoBlob, "video.mp4");
+      form.append("caption", caption);
+      form.append("cookies", tiktokCookies);
+
+      const res = await fetch("/api/tiktok/post", { method: "POST", body: form });
+      const raw = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error(raw.slice(0, 200) || `HTTP ${res.status}`);
+      }
+      if (!res.ok || data.success === false) {
+        const hints = (data.hints || []).join(" | ");
+        throw new Error(
+          (data.error || "Đăng thất bại") + (hints ? " — " + hints : "") +
+          (data.debug?.lastDetail ? " | debug: " + data.debug.lastDetail : "")
+        );
+      }
+      setPostResult("✅ " + (data.message || "Đã đăng TikTok") + (data.itemId ? ` (id: ${data.itemId})` : ""));
+    } catch (e: any) {
+      setPostResult("❌ " + (e.message || "Lỗi đăng TikTok"));
+    } finally {
+      setPosting(false);
+    }
+  };
+
   const downloadVideo = () => {
     if (!outputUrl) return;
     const a = document.createElement("a");
@@ -475,6 +529,32 @@ export default function Home() {
                       Tải Thumbnail
                     </a>
                   )}
+                </div>
+
+                <div className="mt-4 space-y-2 border-t border-[#333] pt-4">
+                  <label className="block text-sm text-gray-400">
+                    Cookie TikTok (bắt buộc có <code className="text-pink-400">sessionid</code>)
+                  </label>
+                  <textarea
+                    value={tiktokCookies}
+                    onChange={(e) => setTiktokCookies(e.target.value)}
+                    rows={3}
+                    placeholder="sessionid=...; msToken=...; tt-target-idc=..."
+                    className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#ff0050] resize-none"
+                  />
+                  <button
+                    onClick={postToTikTok}
+                    disabled={posting}
+                    className="w-full py-3 rounded-xl bg-[#00f2ea] text-black font-semibold hover:opacity-90 disabled:opacity-50 transition"
+                  >
+                    {posting ? "Đang đăng TikTok..." : "Đăng lên TikTok (caption + video)"}
+                  </button>
+                  {postResult && (
+                    <p className="text-xs text-gray-300 break-words whitespace-pre-wrap">{postResult}</p>
+                  )}
+                  <p className="text-[11px] text-gray-600">
+                    Unofficial API — cookie hết hạn phải lấy lại. Video nên &lt;15–20MB. Thumbnail dùng frame từ video khi đăng trên app/web TikTok.
+                  </p>
                 </div>
               </div>
             ) : (
