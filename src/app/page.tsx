@@ -5,15 +5,15 @@ import { useState, useRef, useEffect } from "react";
 const proxyUrl = (url: string) => `/api/proxy?url=${encodeURIComponent(url)}`;
 
 export default function Home() {
-  const [songTitle, setSongTitle] = useState("Phía Sau Một Cô Gái");
-  const [artist, setArtist] = useState("Đại Ngố Remix - NTP Vinahouse");
+  const [songTitle, setSongTitle] = useState("MASHUP HOT TIKTOK - QUINVY REMIX");
+  const [artist, setArtist] = useState("OCEAN MUSIC");
   const [musicUrl, setMusicUrl] = useState("");
   const [musicFile, setMusicFile] = useState<File | null>(null);
   const [bgFile, setBgFile] = useState<File | null>(null);
   const [caption, setCaption] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState("Upload nền + nhạc → bấm Preview");
+  const [status, setStatus] = useState("Upload nền + nhạc → Load Preview");
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewReady, setPreviewReady] = useState(false);
@@ -25,6 +25,7 @@ export default function Home() {
   const bgVideoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const logoImgRef = useRef<HTMLImageElement | null>(null);
   const bgObjectUrl = useRef<string | null>(null);
   const musicObjectUrl = useRef<string | null>(null);
   const bgInputRef = useRef<HTMLInputElement>(null);
@@ -32,8 +33,19 @@ export default function Home() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const rafRef = useRef<number>(0);
+  const audioGraphRef = useRef<{
+    ctx: AudioContext;
+    source: MediaElementAudioSourceNode;
+  } | null>(null);
 
+  // Preload logo
   useEffect(() => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.src = "/logo.png";
+    img.onload = () => {
+      logoImgRef.current = img;
+    };
     try {
       const saved = localStorage.getItem("tiktok_cookies");
       if (saved) setTiktokCookies(saved);
@@ -42,26 +54,15 @@ export default function Home() {
 
   useEffect(() => {
     if (songTitle || artist) {
-      const tags = [
-        "#phiasaumotcogai",
-        "#vinahouse",
-        "#remix",
-        "#xuhuong",
-        "#ntpvinahouse",
-        "#nhactre",
-        "#vietmix",
-        "#daingot",
-      ];
+      const tags = ["#vinahouse", "#remix", "#xuhuong", "#nhactre", "#mashup", "#tiktok"];
       setCaption(`${songTitle} - ${artist}\n\n${tags.join(" ")}`);
     }
   }, [songTitle, artist]);
 
-  // Cleanup object URLs
   useEffect(() => {
     return () => {
       if (bgObjectUrl.current) URL.revokeObjectURL(bgObjectUrl.current);
       if (musicObjectUrl.current) URL.revokeObjectURL(musicObjectUrl.current);
-      if (outputUrl) URL.revokeObjectURL(outputUrl);
       cancelAnimationFrame(rafRef.current);
     };
   }, []);
@@ -115,7 +116,7 @@ export default function Home() {
         };
         audio.onerror = () => {
           clearTimeout(t);
-          reject(new Error("Không load được nhạc (thử file mp3 hoặc link khác)"));
+          reject(new Error("Không load được nhạc (thử file mp3)"));
         };
         audio.load();
       });
@@ -125,7 +126,6 @@ export default function Home() {
       if (d > 120) d = 120;
       setDuration(d);
 
-      // Random start on bg if longer than music
       if (video.duration && isFinite(video.duration) && video.duration > d + 1) {
         video.currentTime = Math.random() * (video.duration - d);
       } else {
@@ -133,7 +133,7 @@ export default function Home() {
       }
 
       setPreviewReady(true);
-      setStatus(`Preview sẵn sàng (~${d.toFixed(0)}s) · Bấm Phát hoặc Xuất & Tải`);
+      setStatus(`Preview sẵn sàng (~${d.toFixed(0)}s)`);
     } catch (e: any) {
       setError(e?.message || "Lỗi load preview");
       setStatus("Thất bại");
@@ -142,30 +142,22 @@ export default function Home() {
 
   const playPreview = async () => {
     if (!previewReady) return;
-    const video = bgVideoRef.current!;
-    const audio = audioRef.current!;
     try {
-      await video.play();
-      await audio.play();
+      await bgVideoRef.current!.play();
+      await audioRef.current!.play();
       setStatus("Đang phát preview...");
     } catch (e: any) {
       setError(e?.message || "Không phát được");
     }
   };
 
-  const stopPreview = () => {
-    bgVideoRef.current?.pause();
-    audioRef.current?.pause();
-    setStatus("Đã dừng preview");
-  };
-
+  /** Layout 100% theo mẫu: logo top-left, chữ bottom-left + gạch dọc */
   const drawFrame = (
     ctx: CanvasRenderingContext2D,
     video: HTMLVideoElement,
     w: number,
     h: number
   ) => {
-    // cover scale like object-fit: cover
     const vw = video.videoWidth || w;
     const vh = video.videoHeight || h;
     const scale = Math.max(w / vw, h / vh);
@@ -177,24 +169,81 @@ export default function Home() {
     ctx.fillRect(0, 0, w, h);
     ctx.drawImage(video, dx, dy, dw, dh);
 
-    // text overlay
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
+    // Soft gradient bottom for text readability (subtle like ref)
+    const grad = ctx.createLinearGradient(0, h * 0.55, 0, h);
+    grad.addColorStop(0, "rgba(0,0,0,0)");
+    grad.addColorStop(1, "rgba(0,0,0,0.45)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, h * 0.55, w, h * 0.45);
 
-    const title = (songTitle || "").slice(0, 80);
-    const sub = (artist || "").slice(0, 80);
+    // Logo top-left
+    const logo = logoImgRef.current;
+    if (logo && logo.complete && logo.naturalWidth > 0) {
+      const logoW = Math.round(w * 0.11);
+      const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
+      const lx = Math.round(w * 0.035);
+      const ly = Math.round(h * 0.04);
+      ctx.drawImage(logo, lx, ly, logoW, logoH);
+    }
 
-    ctx.font = "bold 40px system-ui, Segoe UI, sans-serif";
-    ctx.lineWidth = 6;
-    ctx.strokeStyle = "rgba(0,0,0,0.75)";
-    ctx.fillStyle = "#fff";
-    ctx.strokeText(title, w / 2, h * 0.4);
-    ctx.fillText(title, w / 2, h * 0.4);
+    // Text bottom-left with vertical bar
+    const title = (songTitle || "").toUpperCase().slice(0, 90);
+    const sub = (artist || "").toUpperCase().slice(0, 60);
 
-    ctx.font = "600 24px system-ui, Segoe UI, sans-serif";
-    ctx.lineWidth = 4;
-    ctx.strokeText(sub, w / 2, h * 0.48);
-    ctx.fillText(sub, w / 2, h * 0.48);
+    const leftPad = Math.round(w * 0.045);
+    const barW = Math.max(3, Math.round(w * 0.004));
+    const titleSize = Math.round(w * 0.028);
+    const subSize = Math.round(w * 0.018);
+    const textX = leftPad + barW + Math.round(w * 0.014);
+    const baseY = h - Math.round(h * 0.1);
+
+    ctx.textAlign = "left";
+    ctx.textBaseline = "bottom";
+
+    // Measure for bar height
+    ctx.font = `700 ${titleSize}px "Segoe UI", system-ui, sans-serif`;
+    const titleH = titleSize * 1.15;
+    ctx.font = `600 ${subSize}px "Segoe UI", system-ui, sans-serif`;
+    const subH = subSize * 1.2;
+    const gap = Math.round(h * 0.012);
+    const blockH = titleH + gap + subH;
+    const barTop = baseY - blockH;
+    const barBottom = baseY;
+
+    // Vertical white bar
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(leftPad, barTop, barW, barBottom - barTop);
+
+    // Title
+    ctx.font = `700 ${titleSize}px "Segoe UI", system-ui, sans-serif`;
+    ctx.fillStyle = "#ffffff";
+    ctx.shadowColor = "rgba(0,0,0,0.55)";
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 2;
+    ctx.fillText(title, textX, baseY - subH - gap);
+
+    // Subtitle (slightly muted)
+    ctx.font = `600 ${subSize}px "Segoe UI", system-ui, sans-serif`;
+    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.fillText(sub, textX, baseY);
+
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+  };
+
+  const getAudioStream = async (audio: HTMLAudioElement) => {
+    if (audioGraphRef.current) {
+      return audioGraphRef.current.ctx.createMediaStreamDestination().stream;
+    }
+    const ctx = new AudioContext();
+    const source = ctx.createMediaElementSource(audio);
+    const dest = ctx.createMediaStreamDestination();
+    source.connect(dest);
+    source.connect(ctx.destination);
+    audioGraphRef.current = { ctx, source };
+    // reconnect source to new dest each export
+    return dest.stream;
   };
 
   const exportAndDownload = async () => {
@@ -207,7 +256,7 @@ export default function Home() {
     setError(null);
     setOutputUrl(null);
     setProgress(0);
-    setStatus("Đang xuất video (ghi màn hình preview)...");
+    setStatus("Đang xuất video...");
 
     const video = bgVideoRef.current;
     const audio = audioRef.current;
@@ -217,23 +266,45 @@ export default function Home() {
     canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext("2d")!;
-
     const total = Math.min(duration, 120);
-    // Reset playheads
-    audio.currentTime = 0;
-    // keep random bg offset already set, or restart relative
-    const bgStart = video.currentTime;
 
     try {
-      // Video stream from canvas
+      // Ensure logo loaded
+      if (!logoImgRef.current) {
+        await new Promise<void>((resolve) => {
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+          img.src = "/logo.png";
+          img.onload = () => {
+            logoImgRef.current = img;
+            resolve();
+          };
+          img.onerror = () => resolve();
+          setTimeout(() => resolve(), 3000);
+        });
+      }
+
       const canvasStream = canvas.captureStream(30);
 
-      // Audio stream
-      const audioCtx = new AudioContext();
-      const dest = audioCtx.createMediaStreamDestination();
-      const source = audioCtx.createMediaElementSource(audio);
-      source.connect(dest);
-      source.connect(audioCtx.destination); // also hear while recording
+      // Audio: create graph once
+      let audioCtx: AudioContext;
+      let dest: MediaStreamAudioDestinationNode;
+      if (!audioGraphRef.current) {
+        audioCtx = new AudioContext();
+        const source = audioCtx.createMediaElementSource(audio);
+        dest = audioCtx.createMediaStreamDestination();
+        source.connect(dest);
+        source.connect(audioCtx.destination);
+        audioGraphRef.current = { ctx: audioCtx, source };
+      } else {
+        audioCtx = audioGraphRef.current.ctx;
+        dest = audioCtx.createMediaStreamDestination();
+        try {
+          audioGraphRef.current.source.disconnect();
+        } catch {}
+        audioGraphRef.current.source.connect(dest);
+        audioGraphRef.current.source.connect(audioCtx.destination);
+      }
 
       const combined = new MediaStream([
         ...canvasStream.getVideoTracks(),
@@ -252,7 +323,7 @@ export default function Home() {
       chunksRef.current = [];
       const recorder = new MediaRecorder(combined, {
         mimeType: mime,
-        videoBitsPerSecond: 4_000_000,
+        videoBitsPerSecond: 5_000_000,
       });
       recorderRef.current = recorder;
 
@@ -261,14 +332,12 @@ export default function Home() {
       };
 
       const done = new Promise<Blob>((resolve, reject) => {
-        recorder.onstop = () => {
-          resolve(new Blob(chunksRef.current, { type: mime }));
-        };
+        recorder.onstop = () => resolve(new Blob(chunksRef.current, { type: mime }));
         recorder.onerror = () => reject(new Error("MediaRecorder error"));
       });
 
       recorder.start(200);
-
+      audio.currentTime = 0;
       await video.play();
       await audio.play();
       if (audioCtx.state === "suspended") await audioCtx.resume();
@@ -292,32 +361,19 @@ export default function Home() {
       if (recorder.state === "recording") recorder.stop();
 
       const blob = await done;
-
-      // cleanup audio graph
-      try {
-        source.disconnect();
-        await audioCtx.close();
-      } catch {}
-
       const url = URL.createObjectURL(blob);
       setOutputUrl(url);
       setProgress(100);
-      setStatus("✅ Xuất xong — đang tải file...");
 
-      // Auto download
       const a = document.createElement("a");
       a.href = url;
       const ext = mime.includes("mp4") ? "mp4" : "webm";
-      a.download = `${(songTitle || "video").replace(/\s+/g, "_")}_720p.${ext}`;
+      a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p.${ext}`;
       a.click();
-
-      setStatus("✅ Đã tải file về máy");
+      setStatus("✅ Đã xuất & tải file (layout chuẩn logo + chữ)");
     } catch (e: any) {
       console.error(e);
-      setError(
-        e?.message ||
-          "Xuất thất bại. Dùng Chrome/Edge mới nhất. Nếu nhạc từ link, thử upload file mp3."
-      );
+      setError(e?.message || "Xuất thất bại — dùng Chrome/Edge");
       setStatus("Thất bại");
       video.pause();
       audio.pause();
@@ -350,9 +406,7 @@ export default function Home() {
       } catch {
         throw new Error(raw.slice(0, 200) || `HTTP ${res.status}`);
       }
-      if (!res.ok || data.success === false) {
-        throw new Error(data.error || "Đăng thất bại");
-      }
+      if (!res.ok || data.success === false) throw new Error(data.error || "Đăng thất bại");
       setPostResult("✅ " + (data.message || "Đã gửi đăng"));
     } catch (e: any) {
       setPostResult("❌ " + (e.message || "Lỗi"));
@@ -366,14 +420,10 @@ export default function Home() {
       <header className="border-b border-[#262626] bg-[#111] sticky top-0 z-50">
         <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#ff0050] to-[#00f2ea] flex items-center justify-center font-bold text-lg">
-              OM
-            </div>
+            <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
             <div>
               <h1 className="text-xl font-bold tracking-tight">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400">
-                Preview trình duyệt • Xuất & tải nhanh • Không FFmpeg
-              </p>
+              <p className="text-xs text-gray-400">Preview = Export · Layout chuẩn</p>
             </div>
           </div>
           <div className="text-sm text-green-400">● Live Preview</div>
@@ -400,7 +450,7 @@ export default function Home() {
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-400 mb-1">Tác giả / Remix</label>
+                <label className="block text-sm text-gray-400 mb-1">Tác giả / Label</label>
                 <input
                   type="text"
                   value={artist}
@@ -512,8 +562,9 @@ export default function Home() {
 
         <div className="space-y-6">
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
-            <h2 className="text-lg font-semibold mb-4">Preview (Landscape 720p)</h2>
-            <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-[#333]">
+            <h2 className="text-lg font-semibold mb-4">Preview (giống file xuất)</h2>
+            {/* Frame tỷ lệ 16:9 — layout giống ảnh mẫu 100% */}
+            <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-[#333] shadow-lg">
               <video
                 ref={bgVideoRef}
                 className="absolute inset-0 w-full h-full object-cover"
@@ -521,25 +572,57 @@ export default function Home() {
                 playsInline
                 loop
               />
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-4">
-                <p
-                  className="text-white text-center font-bold text-xl sm:text-2xl"
-                  style={{ textShadow: "0 2px 8px rgba(0,0,0,.85)" }}
-                >
-                  {songTitle}
-                </p>
-                <p
-                  className="text-white/95 text-center text-sm sm:text-base mt-2"
-                  style={{ textShadow: "0 2px 6px rgba(0,0,0,.8)" }}
-                >
-                  {artist}
-                </p>
+              {/* Gradient đáy */}
+              <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/50 to-transparent pointer-events-none" />
+
+              {/* Logo góc trên trái */}
+              <img
+                src="/logo.png"
+                alt="Ontop"
+                className="absolute z-10 object-contain pointer-events-none"
+                style={{
+                  left: "3.5%",
+                  top: "4%",
+                  width: "11%",
+                  height: "auto",
+                }}
+              />
+
+              {/* Chữ góc dưới trái + gạch dọc */}
+              <div
+                className="absolute z-10 flex items-stretch pointer-events-none"
+                style={{ left: "4.5%", bottom: "8%", right: "8%" }}
+              >
+                <div
+                  className="bg-white shrink-0 self-stretch"
+                  style={{ width: 3, minHeight: "100%" }}
+                />
+                <div className="pl-3 flex flex-col justify-end min-w-0">
+                  <p
+                    className="text-white font-bold uppercase leading-tight truncate"
+                    style={{
+                      fontSize: "clamp(11px, 2.2vw, 18px)",
+                      textShadow: "0 2px 8px rgba(0,0,0,0.55)",
+                    }}
+                  >
+                    {songTitle}
+                  </p>
+                  <p
+                    className="text-white/90 font-semibold uppercase leading-tight mt-1 truncate"
+                    style={{
+                      fontSize: "clamp(9px, 1.5vw, 13px)",
+                      textShadow: "0 2px 6px rgba(0,0,0,0.5)",
+                    }}
+                  >
+                    {artist}
+                  </p>
+                </div>
               </div>
             </div>
             <audio ref={audioRef} className="hidden" crossOrigin="anonymous" />
             <canvas ref={canvasRef} className="hidden" />
             <p className="text-xs text-gray-500 mt-3 text-center">
-              Xem trước ngay trên trình duyệt · Xuất bằng MediaRecorder (không render FFmpeg)
+              Logo trên-trái · Chữ dưới-trái + gạch trắng · Preview = khung xuất
             </p>
           </section>
 
@@ -554,24 +637,20 @@ export default function Home() {
               >
                 Tải lại
               </a>
-
               <div className="border-t border-[#333] pt-4 space-y-2">
-                <label className="block text-sm text-gray-400">Caption (đăng TikTok)</label>
+                <label className="block text-sm text-gray-400">Caption TikTok</label>
                 <textarea
                   value={caption}
                   onChange={(e) => setCaption(e.target.value)}
                   rows={3}
                   className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#ff0050] resize-none"
                 />
-                <label className="block text-sm text-gray-400">
-                  Cookie TikTok (<code className="text-pink-400">sessionid</code>)
-                </label>
+                <label className="block text-sm text-gray-400">Cookie (sessionid)</label>
                 <textarea
                   value={tiktokCookies}
                   onChange={(e) => setTiktokCookies(e.target.value)}
                   rows={2}
                   className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#ff0050] resize-none"
-                  placeholder="sessionid=..."
                 />
                 <button
                   onClick={postToTikTok}
@@ -590,7 +669,7 @@ export default function Home() {
       </main>
 
       <footer className="border-t border-[#262626] mt-12 py-6 text-center text-sm text-gray-500">
-        Ontop Media Music • Browser preview • MediaRecorder export • 1280×720
+        Ontop Media Music • Layout chuẩn mẫu • 1280×720
       </footer>
     </div>
   );
