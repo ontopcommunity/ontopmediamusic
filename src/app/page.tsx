@@ -151,80 +151,96 @@ export default function Home() {
     }
   };
 
-  /** Layout 100% theo mẫu: logo top-left, chữ bottom-left + gạch dọc */
+  /**
+   * Layout mẫu:
+   * - Logo trên-trái (to hơn một chút)
+   * - Chữ dưới-trái nhỏ gọn + gạch dọc (tỉ lệ giống ảnh mẫu)
+   * - progress 0..1: Ken Burns zoom-in + pan, cover crop 1280x720
+   * Font: Montserrat (giống style music video)
+   */
   const drawFrame = (
     ctx: CanvasRenderingContext2D,
     video: HTMLVideoElement,
     w: number,
-    h: number
+    h: number,
+    progress = 0
   ) => {
     const vw = video.videoWidth || w;
     const vh = video.videoHeight || h;
-    const scale = Math.max(w / vw, h / vh);
-    const dw = vw * scale;
-    const dh = vh * scale;
-    const dx = (w - dw) / 2;
-    const dy = (h - dh) / 2;
+
+    // Cover base scale, rồi phóng to dần (1.0 → 1.18) + pan nhẹ
+    const p = Math.min(1, Math.max(0, progress));
+    const zoom = 1 + p * 0.18;
+    const base = Math.max(w / vw, h / vh) * zoom;
+    const dw = vw * base;
+    const dh = vh * base;
+    // pan: dịch nhẹ sang phải-xuống khi zoom
+    const dx = (w - dw) / 2 - p * (dw - w) * 0.15;
+    const dy = (h - dh) / 2 - p * (dh - h) * 0.1;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, w, h);
+    ctx.clip();
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, w, h);
     ctx.drawImage(video, dx, dy, dw, dh);
+    ctx.restore();
 
-    // Soft gradient bottom for text readability (subtle like ref)
-    const grad = ctx.createLinearGradient(0, h * 0.55, 0, h);
+    // Gradient đáy nhẹ
+    const grad = ctx.createLinearGradient(0, h * 0.62, 0, h);
     grad.addColorStop(0, "rgba(0,0,0,0)");
-    grad.addColorStop(1, "rgba(0,0,0,0.45)");
+    grad.addColorStop(1, "rgba(0,0,0,0.42)");
     ctx.fillStyle = grad;
-    ctx.fillRect(0, h * 0.55, w, h * 0.45);
+    ctx.fillRect(0, h * 0.62, w, h * 0.38);
 
-    // Logo top-left
+    // Logo top-left — to hơn (~14.5% width)
     const logo = logoImgRef.current;
     if (logo && logo.complete && logo.naturalWidth > 0) {
-      const logoW = Math.round(w * 0.11);
+      const logoW = Math.round(w * 0.145);
       const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
-      const lx = Math.round(w * 0.035);
-      const ly = Math.round(h * 0.04);
+      const lx = Math.round(w * 0.032);
+      const ly = Math.round(h * 0.035);
       ctx.drawImage(logo, lx, ly, logoW, logoH);
     }
 
-    // Text bottom-left with vertical bar
+    // Text nhỏ gọn bottom-left (tỉ lệ mẫu)
     const title = (songTitle || "").toUpperCase().slice(0, 90);
     const sub = (artist || "").toUpperCase().slice(0, 60);
 
-    const leftPad = Math.round(w * 0.045);
-    const barW = Math.max(3, Math.round(w * 0.004));
-    const titleSize = Math.round(w * 0.028);
-    const subSize = Math.round(w * 0.018);
-    const textX = leftPad + barW + Math.round(w * 0.014);
-    const baseY = h - Math.round(h * 0.1);
+    const leftPad = Math.round(w * 0.042);
+    const barW = Math.max(3, Math.round(w * 0.0035));
+    // ~1.9% và ~1.25% chiều rộng khung — nhỏ hơn trước
+    const titleSize = Math.round(w * 0.019);
+    const subSize = Math.round(w * 0.0125);
+    const textX = leftPad + barW + Math.round(w * 0.012);
+    const baseY = h - Math.round(h * 0.085);
+
+    const fontTitle = `700 ${titleSize}px Montserrat, "Segoe UI", sans-serif`;
+    const fontSub = `600 ${subSize}px Montserrat, "Segoe UI", sans-serif`;
 
     ctx.textAlign = "left";
     ctx.textBaseline = "bottom";
-
-    // Measure for bar height
-    ctx.font = `700 ${titleSize}px "Segoe UI", system-ui, sans-serif`;
-    const titleH = titleSize * 1.15;
-    ctx.font = `600 ${subSize}px "Segoe UI", system-ui, sans-serif`;
-    const subH = subSize * 1.2;
-    const gap = Math.round(h * 0.012);
+    ctx.font = fontTitle;
+    const titleH = titleSize * 1.1;
+    ctx.font = fontSub;
+    const subH = subSize * 1.15;
+    const gap = Math.round(h * 0.008);
     const blockH = titleH + gap + subH;
     const barTop = baseY - blockH;
-    const barBottom = baseY;
 
-    // Vertical white bar
     ctx.fillStyle = "#ffffff";
-    ctx.fillRect(leftPad, barTop, barW, barBottom - barTop);
+    ctx.fillRect(leftPad, barTop, barW, baseY - barTop);
 
-    // Title
-    ctx.font = `700 ${titleSize}px "Segoe UI", system-ui, sans-serif`;
+    ctx.font = fontTitle;
     ctx.fillStyle = "#ffffff";
-    ctx.shadowColor = "rgba(0,0,0,0.55)";
-    ctx.shadowBlur = 8;
-    ctx.shadowOffsetY = 2;
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetY = 1;
     ctx.fillText(title, textX, baseY - subH - gap);
 
-    // Subtitle (slightly muted)
-    ctx.font = `600 ${subSize}px "Segoe UI", system-ui, sans-serif`;
-    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.font = fontSub;
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
     ctx.fillText(sub, textX, baseY);
 
     ctx.shadowColor = "transparent";
@@ -342,11 +358,19 @@ export default function Home() {
       await audio.play();
       if (audioCtx.state === "suspended") await audioCtx.resume();
 
+      // Đợi font Montserrat sẵn sàng trước khi vẽ chữ
+      try {
+        await (document as any).fonts?.load?.('700 24px Montserrat');
+        await (document as any).fonts?.load?.('600 16px Montserrat');
+      } catch {}
+
       const t0 = performance.now();
       const drawLoop = () => {
-        drawFrame(ctx, video, W, H);
         const elapsed = (performance.now() - t0) / 1000;
-        setProgress(Math.min(99, Math.round((elapsed / total) * 100)));
+        const prog = Math.min(1, elapsed / total);
+        // Ken Burns: phóng to + pan dần trong suốt video
+        drawFrame(ctx, video, W, H, prog);
+        setProgress(Math.min(99, Math.round(prog * 100)));
         if (elapsed < total && recorder.state === "recording") {
           rafRef.current = requestAnimationFrame(drawLoop);
         }
@@ -581,9 +605,9 @@ export default function Home() {
                 alt="Ontop"
                 className="absolute z-10 object-contain pointer-events-none"
                 style={{
-                  left: "3.5%",
-                  top: "4%",
-                  width: "11%",
+                  left: "3.2%",
+                  top: "3.5%",
+                  width: "14.5%",
                   height: "auto",
                 }}
               />
@@ -599,19 +623,21 @@ export default function Home() {
                 />
                 <div className="pl-3 flex flex-col justify-end min-w-0">
                   <p
-                    className="text-white font-bold uppercase leading-tight truncate"
+                    className="text-white font-bold uppercase leading-tight truncate tracking-wide"
                     style={{
-                      fontSize: "clamp(11px, 2.2vw, 18px)",
-                      textShadow: "0 2px 8px rgba(0,0,0,0.55)",
+                      fontFamily: "var(--font-montserrat), Montserrat, sans-serif",
+                      fontSize: "clamp(10px, 1.7vw, 14px)",
+                      textShadow: "0 1px 6px rgba(0,0,0,0.5)",
                     }}
                   >
                     {songTitle}
                   </p>
                   <p
-                    className="text-white/90 font-semibold uppercase leading-tight mt-1 truncate"
+                    className="text-white/90 font-semibold uppercase leading-tight mt-0.5 truncate tracking-wide"
                     style={{
-                      fontSize: "clamp(9px, 1.5vw, 13px)",
-                      textShadow: "0 2px 6px rgba(0,0,0,0.5)",
+                      fontFamily: "var(--font-montserrat), Montserrat, sans-serif",
+                      fontSize: "clamp(8px, 1.15vw, 11px)",
+                      textShadow: "0 1px 5px rgba(0,0,0,0.45)",
                     }}
                   >
                     {artist}

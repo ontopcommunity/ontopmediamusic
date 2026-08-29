@@ -1,20 +1,17 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Montserrat } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+const montserrat = Montserrat({
+  subsets: ["latin", "vietnamese"],
+  weight: ["500", "600", "700", "800"],
+  variable: "--font-montserrat",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
   title: "Ontop Media Music - Auto Video Generator",
-  description: "Tạo video TikTok Vinahouse tự động với nhạc và nền đêm mưa",
+  description: "Preview & xuất video nhạc 720p layout chuẩn",
 };
 
 export default function RootLayout({
@@ -23,11 +20,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="vi"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col bg-[#0a0a0a] text-white">
+    <html lang="vi" className={`${montserrat.variable} h-full antialiased`}>
+      <body className={`${montserrat.className} min-h-full flex flex-col bg-[#0a0a0a] text-white`}>
         {children}
       </body>
     </html>
