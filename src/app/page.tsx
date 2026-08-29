@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile, toBlobURL } from "@ffmpeg/util";
 
 const proxyUrl = (url: string) => `/api/proxy?url=${encodeURIComponent(url)}`;
 
@@ -13,48 +11,27 @@ export default function Home() {
   const [musicFile, setMusicFile] = useState<File | null>(null);
   const [bgFile, setBgFile] = useState<File | null>(null);
   const [caption, setCaption] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState("Upload nền + nhạc → bấm Preview");
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
-  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
-  const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewReady, setPreviewReady] = useState(false);
   const [tiktokCookies, setTiktokCookies] = useState("");
   const [posting, setPosting] = useState(false);
   const [postResult, setPostResult] = useState<string | null>(null);
+  const [duration, setDuration] = useState(30);
 
-  const ffmpegRef = useRef<FFmpeg | null>(null);
+  const bgVideoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const bgObjectUrl = useRef<string | null>(null);
+  const musicObjectUrl = useRef<string | null>(null);
   const bgInputRef = useRef<HTMLInputElement>(null);
   const musicInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const ffmpeg = new FFmpeg();
-        ffmpegRef.current = ffmpeg;
-
-        ffmpeg.on("log", ({ message }) => {
-          console.log("[ffmpeg]", message);
-        });
-        ffmpeg.on("progress", ({ progress: p }) => {
-          setProgress(Math.min(99, Math.round(p * 100)));
-        });
-
-        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-        await ffmpeg.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
-        });
-        setFfmpegLoaded(true);
-        setStatus("FFmpeg sẵn sàng");
-      } catch (e) {
-        console.error(e);
-        setError("Không load được FFmpeg. Hãy thử refresh trang.");
-      }
-    };
-    load();
-  }, []);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const rafRef = useRef<number>(0);
 
   useEffect(() => {
     try {
@@ -79,298 +56,279 @@ export default function Home() {
     }
   }, [songTitle, artist]);
 
-  const getAudioDuration = (src: string | File): Promise<number> => {
-    return new Promise((resolve) => {
-      const audio = new Audio();
-      const objectUrl = typeof src === "string" ? src : URL.createObjectURL(src);
-      audio.preload = "metadata";
-      audio.onloadedmetadata = () => {
-        const d = audio.duration;
-        if (typeof src !== "string") URL.revokeObjectURL(objectUrl);
-        resolve(isFinite(d) && d > 0 ? d : 30);
-      };
-      audio.onerror = () => {
-        if (typeof src !== "string") URL.revokeObjectURL(objectUrl);
-        resolve(30);
-      };
-      setTimeout(() => {
-        if (typeof src !== "string") URL.revokeObjectURL(objectUrl);
-        resolve(30);
-      }, 12000);
-      audio.src = objectUrl;
-    });
-  };
+  // Cleanup object URLs
+  useEffect(() => {
+    return () => {
+      if (bgObjectUrl.current) URL.revokeObjectURL(bgObjectUrl.current);
+      if (musicObjectUrl.current) URL.revokeObjectURL(musicObjectUrl.current);
+      if (outputUrl) URL.revokeObjectURL(outputUrl);
+      cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
 
-  const getVideoDuration = (file: File): Promise<number> => {
-    return new Promise((resolve) => {
-      const video = document.createElement("video");
-      const objectUrl = URL.createObjectURL(file);
-      video.preload = "metadata";
-      video.onloadedmetadata = () => {
-        const d = video.duration;
-        URL.revokeObjectURL(objectUrl);
-        resolve(isFinite(d) && d > 0 ? d : 60);
-      };
-      video.onerror = () => {
-        URL.revokeObjectURL(objectUrl);
-        resolve(60);
-      };
-      setTimeout(() => {
-        URL.revokeObjectURL(objectUrl);
-        resolve(60);
-      }, 12000);
-      video.src = objectUrl;
-    });
-  };
+  const loadPreview = async () => {
+    setError(null);
+    setOutputUrl(null);
+    setPreviewReady(false);
+    setProgress(0);
 
-  const handleGenerate = async () => {
-    if (!ffmpegLoaded || !ffmpegRef.current) {
-      setError("FFmpeg chưa sẵn sàng");
-      return;
-    }
     if (!bgFile) {
       setError("Vui lòng upload video nền");
       return;
     }
-    if (!musicUrl && !musicFile) {
-      setError("Vui lòng nhập link nhạc hoặc upload file nhạc");
+    if (!musicFile && !musicUrl.trim()) {
+      setError("Vui lòng upload file nhạc hoặc dán link nhạc");
       return;
     }
 
-    setIsLoading(true);
+    try {
+      setStatus("Đang load preview...");
+
+      if (bgObjectUrl.current) URL.revokeObjectURL(bgObjectUrl.current);
+      bgObjectUrl.current = URL.createObjectURL(bgFile);
+
+      const video = bgVideoRef.current!;
+      video.src = bgObjectUrl.current;
+      video.muted = true;
+      video.playsInline = true;
+      video.loop = true;
+      await video.play().catch(() => {});
+      video.pause();
+      video.currentTime = 0;
+
+      const audio = audioRef.current!;
+      if (musicObjectUrl.current) URL.revokeObjectURL(musicObjectUrl.current);
+      if (musicFile) {
+        musicObjectUrl.current = URL.createObjectURL(musicFile);
+        audio.src = musicObjectUrl.current;
+      } else {
+        musicObjectUrl.current = null;
+        audio.src = proxyUrl(musicUrl.trim());
+      }
+      audio.loop = false;
+
+      await new Promise<void>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("Load nhạc timeout")), 20000);
+        audio.onloadedmetadata = () => {
+          clearTimeout(t);
+          resolve();
+        };
+        audio.onerror = () => {
+          clearTimeout(t);
+          reject(new Error("Không load được nhạc (thử file mp3 hoặc link khác)"));
+        };
+        audio.load();
+      });
+
+      let d = audio.duration;
+      if (!isFinite(d) || d < 3) d = 30;
+      if (d > 120) d = 120;
+      setDuration(d);
+
+      // Random start on bg if longer than music
+      if (video.duration && isFinite(video.duration) && video.duration > d + 1) {
+        video.currentTime = Math.random() * (video.duration - d);
+      } else {
+        video.currentTime = 0;
+      }
+
+      setPreviewReady(true);
+      setStatus(`Preview sẵn sàng (~${d.toFixed(0)}s) · Bấm Phát hoặc Xuất & Tải`);
+    } catch (e: any) {
+      setError(e?.message || "Lỗi load preview");
+      setStatus("Thất bại");
+    }
+  };
+
+  const playPreview = async () => {
+    if (!previewReady) return;
+    const video = bgVideoRef.current!;
+    const audio = audioRef.current!;
+    try {
+      await video.play();
+      await audio.play();
+      setStatus("Đang phát preview...");
+    } catch (e: any) {
+      setError(e?.message || "Không phát được");
+    }
+  };
+
+  const stopPreview = () => {
+    bgVideoRef.current?.pause();
+    audioRef.current?.pause();
+    setStatus("Đã dừng preview");
+  };
+
+  const drawFrame = (
+    ctx: CanvasRenderingContext2D,
+    video: HTMLVideoElement,
+    w: number,
+    h: number
+  ) => {
+    // cover scale like object-fit: cover
+    const vw = video.videoWidth || w;
+    const vh = video.videoHeight || h;
+    const scale = Math.max(w / vw, h / vh);
+    const dw = vw * scale;
+    const dh = vh * scale;
+    const dx = (w - dw) / 2;
+    const dy = (h - dh) / 2;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(video, dx, dy, dw, dh);
+
+    // text overlay
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    const title = (songTitle || "").slice(0, 80);
+    const sub = (artist || "").slice(0, 80);
+
+    ctx.font = "bold 40px system-ui, Segoe UI, sans-serif";
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "rgba(0,0,0,0.75)";
+    ctx.fillStyle = "#fff";
+    ctx.strokeText(title, w / 2, h * 0.4);
+    ctx.fillText(title, w / 2, h * 0.4);
+
+    ctx.font = "600 24px system-ui, Segoe UI, sans-serif";
+    ctx.lineWidth = 4;
+    ctx.strokeText(sub, w / 2, h * 0.48);
+    ctx.fillText(sub, w / 2, h * 0.48);
+  };
+
+  const exportAndDownload = async () => {
+    if (!previewReady || !bgVideoRef.current || !audioRef.current) {
+      setError("Chưa có preview. Bấm Load Preview trước.");
+      return;
+    }
+
+    setIsRecording(true);
     setError(null);
     setOutputUrl(null);
-    setThumbnailUrl(null);
     setProgress(0);
-    setStatus("Đang chuẩn bị...");
+    setStatus("Đang xuất video (ghi màn hình preview)...");
 
-    const ffmpeg = ffmpegRef.current;
+    const video = bgVideoRef.current;
+    const audio = audioRef.current;
+    const canvas = canvasRef.current!;
+    const W = 1280;
+    const H = 720;
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d")!;
 
-    const safeDelete = async (name: string) => {
-      try {
-        await ffmpeg.deleteFile(name);
-      } catch {
-        /* ignore */
-      }
-    };
+    const total = Math.min(duration, 120);
+    // Reset playheads
+    audio.currentTime = 0;
+    // keep random bg offset already set, or restart relative
+    const bgStart = video.currentTime;
 
     try {
-      await safeDelete("bg.mp4");
-      await safeDelete("music.mp3");
-      await safeDelete("output.mp4");
-      await safeDelete("thumb.jpg");
-      await safeDelete("font.ttf");
+      // Video stream from canvas
+      const canvasStream = canvas.captureStream(30);
 
-      // ===== MUSIC =====
-      setStatus("Đang tải nhạc...");
-      let musicData: Uint8Array;
-      let duration = 30;
+      // Audio stream
+      const audioCtx = new AudioContext();
+      const dest = audioCtx.createMediaStreamDestination();
+      const source = audioCtx.createMediaElementSource(audio);
+      source.connect(dest);
+      source.connect(audioCtx.destination); // also hear while recording
 
-      if (musicFile) {
-        musicData = await fetchFile(musicFile);
-        duration = await getAudioDuration(musicFile);
-      } else {
-        const res = await fetch(proxyUrl(musicUrl));
-        if (!res.ok) {
-          throw new Error(
-            `Không tải được nhạc từ link (HTTP ${res.status}). Thử upload file nhạc mp3.`
-          );
-        }
-        const blob = await res.blob();
-        if (blob.size < 1000) {
-          throw new Error("File nhạc tải về quá nhỏ / không hợp lệ. Kiểm tra link hoặc upload file.");
-        }
-        musicData = await fetchFile(blob);
-        duration = await getAudioDuration(proxyUrl(musicUrl));
-      }
+      const combined = new MediaStream([
+        ...canvasStream.getVideoTracks(),
+        ...dest.stream.getAudioTracks(),
+      ]);
 
-      if (!isFinite(duration) || duration < 3) duration = 30;
-      if (duration > 120) {
-        duration = 120;
-        setStatus("Nhạc dài >120s — cắt còn 120s để render siêu nhanh...");
-      } else {
-        setStatus(`Độ dài nhạc: ${duration.toFixed(1)}s — render 720p nhanh...`);
-      }
+      const mimeCandidates = [
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm",
+        "video/mp4",
+      ];
+      const mime =
+        mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
 
-      await ffmpeg.writeFile("music.mp3", musicData);
+      chunksRef.current = [];
+      const recorder = new MediaRecorder(combined, {
+        mimeType: mime,
+        videoBitsPerSecond: 4_000_000,
+      });
+      recorderRef.current = recorder;
 
-      // ===== BACKGROUND =====
-      if (bgFile.size > 80 * 1024 * 1024) {
-        throw new Error(
-          `Video nền ${(bgFile.size / 1024 / 1024).toFixed(1)}MB quá lớn. Hãy dùng file < 50–80MB.`
-        );
-      }
-      const bgData = await fetchFile(bgFile);
-      await ffmpeg.writeFile("bg.mp4", bgData);
-
-      const bgDuration = await getVideoDuration(bgFile);
-      const maxStart = Math.max(0, bgDuration - duration - 0.5);
-      const startTime = maxStart > 1 ? Math.random() * maxStart : 0;
-
-      // ===== FONT for drawtext (required by ffmpeg.wasm) =====
-      setStatus("Đang tải font chữ...");
-      let hasFont = false;
-      try {
-        const fontUrls = [
-          "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
-          "https://raw.githubusercontent.com/googlefonts/noto-fonts/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf",
-        ];
-        let fontBin: Uint8Array | null = null;
-        for (const fu of fontUrls) {
-          try {
-            const fr = await fetch(fu);
-            if (fr.ok) {
-              fontBin = await fetchFile(await fr.blob());
-              break;
-            }
-          } catch {
-            /* try next */
-          }
-        }
-        if (fontBin && fontBin.length > 1000) {
-          await ffmpeg.writeFile("font.ttf", fontBin);
-          hasFont = true;
-        }
-      } catch (fe) {
-        console.warn("Font load failed", fe);
-      }
-
-      // Escape for drawtext
-      const esc = (s: string) =>
-        s
-          .replace(/\\/g, "\\\\")
-          .replace(/:/g, "\\:")
-          .replace(/'/g, "")
-          .replace(/"/g, "")
-          .replace(/%/g, "")
-          .replace(/\n/g, " ")
-          .slice(0, 80);
-      const titleEsc = esc(songTitle || "Untitled");
-      const artistEsc = esc(artist || "");
-
-      setStatus(
-        `Render nhanh 1280×720 (nền ~${startTime.toFixed(1)}s, dài ${duration.toFixed(1)}s)...`
-      );
-
-      const runEncode = async (withText: boolean) => {
-        const vfBase =
-          "[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=30";
-        let filter: string;
-        if (withText && hasFont) {
-          filter =
-            vfBase +
-            `,drawtext=fontfile=/font.ttf:text='${titleEsc}':fontcolor=white:fontsize=40:borderw=3:bordercolor=black@0.8:x=(w-text_w)/2:y=h*0.38` +
-            `,drawtext=fontfile=/font.ttf:text='${artistEsc}':fontcolor=white:fontsize=22:borderw=2:bordercolor=black@0.7:x=(w-text_w)/2:y=h*0.48[v]`;
-        } else {
-          filter = vfBase + "[v]";
-        }
-
-        await ffmpeg.exec([
-          "-ss",
-          String(startTime),
-          "-t",
-          String(duration),
-          "-i",
-          "bg.mp4",
-          "-i",
-          "music.mp3",
-          "-filter_complex",
-          filter,
-          "-map",
-          "[v]",
-          "-map",
-          "1:a?",
-          "-c:v",
-          "libx264",
-          "-preset",
-          "ultrafast",
-          "-tune",
-          "fastdecode",
-          "-crf",
-          "32",
-          "-pix_fmt",
-          "yuv420p",
-          "-threads",
-          "0",
-          "-c:a",
-          "aac",
-          "-b:a",
-          "96k",
-          "-ar",
-          "44100",
-          "-ac",
-          "2",
-          "-shortest",
-          "-movflags",
-          "+faststart",
-          "-y",
-          "output.mp4",
-        ]);
+      recorder.ondataavailable = (e) => {
+        if (e.data.size) chunksRef.current.push(e.data);
       };
 
+      const done = new Promise<Blob>((resolve, reject) => {
+        recorder.onstop = () => {
+          resolve(new Blob(chunksRef.current, { type: mime }));
+        };
+        recorder.onerror = () => reject(new Error("MediaRecorder error"));
+      });
+
+      recorder.start(200);
+
+      await video.play();
+      await audio.play();
+      if (audioCtx.state === "suspended") await audioCtx.resume();
+
+      const t0 = performance.now();
+      const drawLoop = () => {
+        drawFrame(ctx, video, W, H);
+        const elapsed = (performance.now() - t0) / 1000;
+        setProgress(Math.min(99, Math.round((elapsed / total) * 100)));
+        if (elapsed < total && recorder.state === "recording") {
+          rafRef.current = requestAnimationFrame(drawLoop);
+        }
+      };
+      rafRef.current = requestAnimationFrame(drawLoop);
+
+      await new Promise((r) => setTimeout(r, total * 1000));
+
+      cancelAnimationFrame(rafRef.current);
+      video.pause();
+      audio.pause();
+      if (recorder.state === "recording") recorder.stop();
+
+      const blob = await done;
+
+      // cleanup audio graph
       try {
-        await runEncode(true);
-      } catch (e1: any) {
-        console.warn("Encode with text failed, retry without text", e1);
-        setStatus("Render không dùng text overlay (fallback)...");
-        await safeDelete("output.mp4");
-        await runEncode(false);
-      }
+        source.disconnect();
+        await audioCtx.close();
+      } catch {}
 
-      setStatus("Đang tạo thumbnail...");
-      try {
-        await ffmpeg.exec([
-          "-i",
-          "output.mp4",
-          "-ss",
-          "0.5",
-          "-vframes",
-          "1",
-          "-q:v",
-          "3",
-          "-y",
-          "thumb.jpg",
-        ]);
-        const thumbData = await ffmpeg.readFile("thumb.jpg");
-        setThumbnailUrl(
-          URL.createObjectURL(new Blob([thumbData as BlobPart], { type: "image/jpeg" }))
-        );
-      } catch {
-        console.warn("thumbnail failed");
-      }
-
-      const outputData = await ffmpeg.readFile("output.mp4");
-      const videoBlob = new Blob([outputData as BlobPart], { type: "video/mp4" });
-      if (videoBlob.size < 1000) {
-        throw new Error("Output video rỗng — codec đầu vào có thể không hỗ trợ. Thử convert nền sang mp4 H.264.");
-      }
-
-      setOutputUrl(URL.createObjectURL(videoBlob));
-      setStatus("✅ Hoàn thành! Video 720p ngang (1280×720) — render nhanh.");
+      const url = URL.createObjectURL(blob);
+      setOutputUrl(url);
       setProgress(100);
-    } catch (err: any) {
-      console.error(err);
-      const msg =
-        err?.message ||
-        err?.toString?.() ||
-        "Lỗi không xác định khi tạo video";
+      setStatus("✅ Xuất xong — đang tải file...");
+
+      // Auto download
+      const a = document.createElement("a");
+      a.href = url;
+      const ext = mime.includes("mp4") ? "mp4" : "webm";
+      a.download = `${(songTitle || "video").replace(/\s+/g, "_")}_720p.${ext}`;
+      a.click();
+
+      setStatus("✅ Đã tải file về máy");
+    } catch (e: any) {
+      console.error(e);
       setError(
-        msg.length > 300
-          ? msg.slice(0, 300) + "…"
-          : msg + " | Thử file mp4/mp3 nhỏ hơn, hoặc tắt extension chặn CDN."
+        e?.message ||
+          "Xuất thất bại. Dùng Chrome/Edge mới nhất. Nếu nhạc từ link, thử upload file mp3."
       );
       setStatus("Thất bại");
+      video.pause();
+      audio.pause();
     } finally {
-      setIsLoading(false);
+      setIsRecording(false);
     }
   };
 
   const postToTikTok = async () => {
     if (!outputUrl) {
-      setPostResult("Chưa có video để đăng");
-      return;
-    }
-    if (!tiktokCookies.trim() && !confirm("Chưa nhập cookie. Vẫn thử dùng TIKTOK_COOKIES trên server?")) {
+      setPostResult("Cần xuất video trước");
       return;
     }
     setPosting(true);
@@ -379,13 +337,11 @@ export default function Home() {
       try {
         localStorage.setItem("tiktok_cookies", tiktokCookies);
       } catch {}
-
       const videoBlob = await fetch(outputUrl).then((r) => r.blob());
       const form = new FormData();
-      form.append("video", videoBlob, "video.mp4");
+      form.append("video", videoBlob, "video.webm");
       form.append("caption", caption);
       form.append("cookies", tiktokCookies);
-
       const res = await fetch("/api/tiktok/post", { method: "POST", body: form });
       const raw = await res.text();
       let data: any;
@@ -395,28 +351,15 @@ export default function Home() {
         throw new Error(raw.slice(0, 200) || `HTTP ${res.status}`);
       }
       if (!res.ok || data.success === false) {
-        const hints = (data.hints || []).join(" | ");
-        throw new Error(
-          (data.error || "Đăng thất bại") + (hints ? " — " + hints : "") +
-          (data.debug?.lastDetail ? " | debug: " + data.debug.lastDetail : "")
-        );
+        throw new Error(data.error || "Đăng thất bại");
       }
-      setPostResult("✅ " + (data.message || "Đã đăng TikTok") + (data.itemId ? ` (id: ${data.itemId})` : ""));
+      setPostResult("✅ " + (data.message || "Đã gửi đăng"));
     } catch (e: any) {
-      setPostResult("❌ " + (e.message || "Lỗi đăng TikTok"));
+      setPostResult("❌ " + (e.message || "Lỗi"));
     } finally {
       setPosting(false);
     }
   };
-
-  const downloadVideo = () => {
-    if (!outputUrl) return;
-    const a = document.createElement("a");
-    a.href = outputUrl;
-    a.download = `${songTitle.replace(/\s+/g, "_")}_vinahouse_landscape.mp4`;
-    a.click();
-  };
-
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
@@ -429,23 +372,16 @@ export default function Home() {
             <div>
               <h1 className="text-xl font-bold tracking-tight">Ontop Media Music</h1>
               <p className="text-xs text-gray-400">
-                Auto Video Generator • Upload nền + nhạc • Landscape
+                Preview trình duyệt • Xuất & tải nhanh • Không FFmpeg
               </p>
             </div>
           </div>
-          <div className="text-sm text-gray-400">
-            {ffmpegLoaded ? (
-              <span className="text-green-400">● FFmpeg Ready</span>
-            ) : (
-              <span className="text-yellow-400">○ Đang load FFmpeg...</span>
-            )}
-          </div>
+          <div className="text-sm text-green-400">● Live Preview</div>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div className="space-y-6">
-          {/* 1. Song info */}
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <span className="w-6 h-6 rounded-full bg-[#ff0050] text-xs flex items-center justify-center">
@@ -461,7 +397,6 @@ export default function Home() {
                   value={songTitle}
                   onChange={(e) => setSongTitle(e.target.value)}
                   className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050] transition"
-                  placeholder="Phía Sau Một Cô Gái"
                 />
               </div>
               <div>
@@ -471,12 +406,11 @@ export default function Home() {
                   value={artist}
                   onChange={(e) => setArtist(e.target.value)}
                   className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050] transition"
-                  placeholder="Đại Ngố Remix - NTP Vinahouse"
                 />
               </div>
               <div>
                 <label className="block text-sm text-gray-400 mb-1">
-                  Nhạc: link trực tiếp hoặc upload file
+                  Nhạc: link hoặc upload file
                 </label>
                 <input
                   type="text"
@@ -487,12 +421,12 @@ export default function Home() {
                     if (musicInputRef.current) musicInputRef.current.value = "";
                   }}
                   className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050] transition mb-2"
-                  placeholder="https://...mp3 (link trực tiếp)"
+                  placeholder="https://...mp3"
                 />
                 <input
                   ref={musicInputRef}
                   type="file"
-                  accept="audio/*,.mp3,.m4a,.wav,.aac"
+                  accept="audio/*,.mp3,.m4a,.wav"
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) {
@@ -504,74 +438,57 @@ export default function Home() {
                 />
                 {musicFile && (
                   <p className="text-xs text-green-400 mt-2">
-                    ✓ File nhạc: {musicFile.name} ({(musicFile.size / 1024 / 1024).toFixed(2)} MB)
+                    ✓ {musicFile.name} ({(musicFile.size / 1024 / 1024).toFixed(2)} MB)
                   </p>
                 )}
               </div>
             </div>
           </section>
 
-          {/* 2. Background video upload */}
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
             <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
               <span className="w-6 h-6 rounded-full bg-[#ff0050] text-xs flex items-center justify-center">
                 2
               </span>
-              Video nền (upload từ máy)
+              Video nền (upload)
             </h2>
-            <p className="text-sm text-gray-400 mb-3">
-              Upload video nền. Hệ thống cắt đoạn ngẫu nhiên có độ dài = nhạc, mute tiếng gốc, xuất{" "}
-              <strong>1280×720 (720p ngang)</strong> — render tối ưu tốc độ.
-            </p>
             <input
               ref={bgInputRef}
               type="file"
               accept="video/*,.mp4,.webm,.mov"
-              onChange={(e) => {
-                const f = e.target.files?.[0] || null;
-                setBgFile(f);
-              }}
+              onChange={(e) => setBgFile(e.target.files?.[0] || null)}
               className="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#00f2ea] file:text-black file:font-medium file:cursor-pointer"
             />
             {bgFile && (
               <p className="text-xs text-green-400 mt-2">
-                ✓ Video nền: {bgFile.name} ({(bgFile.size / 1024 / 1024).toFixed(2)} MB)
+                ✓ {bgFile.name} ({(bgFile.size / 1024 / 1024).toFixed(2)} MB)
               </p>
             )}
-            <p className="text-xs text-gray-600 mt-2">
-              Khuyên dùng mp4, dưới ~50–80MB để render nhanh trên trình duyệt.
-            </p>
           </section>
 
-          <button
-            onClick={handleGenerate}
-            disabled={isLoading || !ffmpegLoaded}
-            className="w-full py-4 rounded-2xl font-bold text-lg bg-gradient-to-r from-[#ff0050] to-[#00f2ea] hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
-          >
-            {isLoading ? (
-              <>
-                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                    fill="none"
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                  />
-                </svg>
-                Đang tạo... {progress}%
-              </>
-            ) : (
-              "Tạo Video Nằm Ngang"
-            )}
-          </button>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <button
+              onClick={loadPreview}
+              disabled={isRecording}
+              className="py-3 rounded-xl font-semibold bg-[#262626] hover:bg-[#333] disabled:opacity-50"
+            >
+              Load Preview
+            </button>
+            <button
+              onClick={playPreview}
+              disabled={!previewReady || isRecording}
+              className="py-3 rounded-xl font-semibold bg-[#262626] hover:bg-[#333] disabled:opacity-50"
+            >
+              Phát
+            </button>
+            <button
+              onClick={exportAndDownload}
+              disabled={!previewReady || isRecording}
+              className="py-3 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50"
+            >
+              {isRecording ? `${progress}%` : "Xuất & Tải"}
+            </button>
+          </div>
 
           {status && (
             <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
@@ -583,94 +500,97 @@ export default function Home() {
               {error}
             </div>
           )}
+          {isRecording && (
+            <div className="w-full h-2 bg-[#222] rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-[#ff0050] to-[#00f2ea] transition-all"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          )}
         </div>
 
-        {/* Right column */}
         <div className="space-y-6">
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
-            <h2 className="text-lg font-semibold mb-4">Preview Video (Landscape)</h2>
-            {outputUrl ? (
-              <div className="space-y-4">
-                <video
-                  src={outputUrl}
-                  controls
-                  className="w-full rounded-xl bg-black aspect-video max-h-[360px] object-contain mx-auto"
-                />
-                <div className="flex gap-3">
-                  <button
-                    onClick={downloadVideo}
-                    className="flex-1 py-3 rounded-xl bg-[#ff0050] hover:bg-[#e6004a] font-medium transition"
-                  >
-                    Tải Video
-                  </button>
-                  {thumbnailUrl && (
-                    <a
-                      href={thumbnailUrl}
-                      download="thumbnail.jpg"
-                      className="flex-1 py-3 rounded-xl bg-[#262626] hover:bg-[#333] font-medium transition text-center"
-                    >
-                      Tải Thumbnail
-                    </a>
-                  )}
-                </div>
-
-                <div className="mt-4 space-y-2 border-t border-[#333] pt-4">
-                  <label className="block text-sm text-gray-400">Caption auto (khi đăng TikTok)</label>
-                  <textarea
-                    value={caption}
-                    onChange={(e) => setCaption(e.target.value)}
-                    rows={3}
-                    className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#ff0050] resize-none"
-                  />
-                  <label className="block text-sm text-gray-400">
-                    Cookie TikTok (bắt buộc có <code className="text-pink-400">sessionid</code>)
-                  </label>
-                  <textarea
-                    value={tiktokCookies}
-                    onChange={(e) => setTiktokCookies(e.target.value)}
-                    rows={3}
-                    placeholder="sessionid=...; msToken=...; tt-target-idc=..."
-                    className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#ff0050] resize-none"
-                  />
-                  <button
-                    onClick={postToTikTok}
-                    disabled={posting}
-                    className="w-full py-3 rounded-xl bg-[#00f2ea] text-black font-semibold hover:opacity-90 disabled:opacity-50 transition"
-                  >
-                    {posting ? "Đang đăng TikTok..." : "Đăng lên TikTok (caption + video)"}
-                  </button>
-                  {postResult && (
-                    <p className="text-xs text-gray-300 break-words whitespace-pre-wrap">{postResult}</p>
-                  )}
-                  <p className="text-[11px] text-gray-600">
-                    Unofficial API — cookie hết hạn phải lấy lại. Video nên &lt;15–20MB. Thumbnail dùng frame từ video khi đăng trên app/web TikTok.
-                  </p>
-                </div>
+            <h2 className="text-lg font-semibold mb-4">Preview (Landscape 720p)</h2>
+            <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-[#333]">
+              <video
+                ref={bgVideoRef}
+                className="absolute inset-0 w-full h-full object-cover"
+                muted
+                playsInline
+                loop
+              />
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-4">
+                <p
+                  className="text-white text-center font-bold text-xl sm:text-2xl"
+                  style={{ textShadow: "0 2px 8px rgba(0,0,0,.85)" }}
+                >
+                  {songTitle}
+                </p>
+                <p
+                  className="text-white/95 text-center text-sm sm:text-base mt-2"
+                  style={{ textShadow: "0 2px 6px rgba(0,0,0,.8)" }}
+                >
+                  {artist}
+                </p>
               </div>
-            ) : (
-              <div className="aspect-video max-h-[360px] bg-[#0a0a0a] rounded-xl border border-dashed border-[#333] flex items-center justify-center text-gray-500">
-                Video nằm ngang sẽ hiện ở đây
-              </div>
-            )}
+            </div>
+            <audio ref={audioRef} className="hidden" crossOrigin="anonymous" />
+            <canvas ref={canvasRef} className="hidden" />
+            <p className="text-xs text-gray-500 mt-3 text-center">
+              Xem trước ngay trên trình duyệt · Xuất bằng MediaRecorder (không render FFmpeg)
+            </p>
           </section>
 
-          
+          {outputUrl && (
+            <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
+              <h2 className="text-lg font-semibold">File đã xuất</h2>
+              <video src={outputUrl} controls className="w-full rounded-xl bg-black max-h-64" />
+              <a
+                href={outputUrl}
+                download
+                className="block text-center py-3 rounded-xl bg-[#ff0050] font-medium"
+              >
+                Tải lại
+              </a>
 
-          {thumbnailUrl && (
-            <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
-              <h2 className="text-lg font-semibold mb-3">Thumbnail</h2>
-              <img
-                src={thumbnailUrl}
-                alt="Thumbnail"
-                className="w-full rounded-xl max-h-48 object-cover"
-              />
+              <div className="border-t border-[#333] pt-4 space-y-2">
+                <label className="block text-sm text-gray-400">Caption (đăng TikTok)</label>
+                <textarea
+                  value={caption}
+                  onChange={(e) => setCaption(e.target.value)}
+                  rows={3}
+                  className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#ff0050] resize-none"
+                />
+                <label className="block text-sm text-gray-400">
+                  Cookie TikTok (<code className="text-pink-400">sessionid</code>)
+                </label>
+                <textarea
+                  value={tiktokCookies}
+                  onChange={(e) => setTiktokCookies(e.target.value)}
+                  rows={2}
+                  className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#ff0050] resize-none"
+                  placeholder="sessionid=..."
+                />
+                <button
+                  onClick={postToTikTok}
+                  disabled={posting}
+                  className="w-full py-3 rounded-xl bg-[#00f2ea] text-black font-semibold disabled:opacity-50"
+                >
+                  {posting ? "Đang đăng..." : "Đăng TikTok"}
+                </button>
+                {postResult && (
+                  <p className="text-xs text-gray-300 break-words">{postResult}</p>
+                )}
+              </div>
             </section>
           )}
         </div>
       </main>
 
       <footer className="border-t border-[#262626] mt-12 py-6 text-center text-sm text-gray-500">
-        Ontop Media Music • Upload nền + nhạc • 720p nhanh • FFmpeg.wasm
+        Ontop Media Music • Browser preview • MediaRecorder export • 1280×720
       </footer>
     </div>
   );
