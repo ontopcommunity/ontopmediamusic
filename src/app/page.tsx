@@ -285,7 +285,7 @@ export default function Home() {
       return;
     }
     if (typeof MediaRecorder === "undefined") {
-      setError("Trình duyệt không hỗ trợ ghi video. Dùng Chrome/Edge.");
+      setError("Trình duyệt không hỗ trợ ghi video. Dùng Chrome.");
       return;
     }
 
@@ -293,317 +293,375 @@ export default function Home() {
     setError(null);
     setOutputUrl(null);
     setProgress(0);
-    setStatus("Đang xuất 720p 50–60fps (stream nhẹ chống crash)...");
+    setStatus("Tối ưu tàn bạo (máy yếu / bài dài): xuất từng đoạn...");
 
     const video = bgVideoRef.current;
     const audio = audioRef.current;
     const canvas = canvasRef.current!;
     const W = 1280;
     const H = 720;
-    if (canvas.width !== W || canvas.height !== H) {
-      canvas.width = W;
-      canvas.height = H;
-    }
+    canvas.width = W;
+    canvas.height = H;
     const ctx = canvas.getContext("2d", { alpha: false })!;
     ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "medium";
+    ctx.imageSmoothingQuality = "low"; // nhẹ CPU, nhìn 720p vẫn ổn
 
     const total = Math.max(
       3,
       duration || (isFinite(audio.duration) ? audio.duration : 30)
     );
 
-    let canvasStream: MediaStream | null = null;
-    let audioStream: MediaStream | null = null;
-    let combined: MediaStream | null = null;
-    let recorder: MediaRecorder | null = null;
-    let drawing = true;
-    let lastProgTs = 0;
-    let lastDrawTs = 0;
-    // 50–60fps: interval ~16.7ms (60) … 20ms (50)
-    const minFrameMs = 1000 / 60;
-    const maxFrameMs = 1000 / 50;
+    // --- Detect máy yếu (Android/iPhone hoặc RAM thấp) ---
+    const ua = navigator.userAgent || "";
+    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+    const devMem = (navigator as any).deviceMemory as number | undefined; // GB
+    const lowEnd = isMobile || (typeof devMem === "number" && devMem <= 4);
 
-    // Stream ra file nếu trình duyệt hỗ trợ → gần như không tích RAM
-    let writable: FileSystemWritableFileStream | null = null;
-    let useDiskStream = false;
-    const diskChunks: Blob[] = []; // fallback RAM (ít bitrate)
+    // Máy yếu: 50fps, bitrate thấp hơn, đoạn 18s; máy khỏe: 60fps, đoạn dài hơn
+    const targetFps = lowEnd ? 50 : 60;
+    const frameInterval = 1000 / targetFps;
+    const vBitrate = lowEnd ? 2_800_000 : 5_000_000;
+    const aBitrate = lowEnd ? 128_000 : 160_000;
+    const segmentSec = lowEnd ? 18 : 45;
 
-    const stopTracks = (stream: MediaStream | null) => {
-      if (!stream) return;
-      stream.getTracks().forEach((t) => {
-        try {
-          t.stop();
-        } catch {}
-      });
-    };
+    // Pre-render logo + chữ 1 lần → mỗi frame chỉ draw video + overlay (rất nhẹ)
+    const overlay = document.createElement("canvas");
+    overlay.width = W;
+    overlay.height = H;
+    const octx = overlay.getContext("2d")!;
+    octx.clearRect(0, 0, W, H);
+    // Dùng drawFrame lên canvas tạm với video đen để lấy overlay? 
+    // Tự vẽ logo+text giống drawFrame
+    const paintOverlay = () => {
+      octx.clearRect(0, 0, W, H);
+      const grad = octx.createLinearGradient(0, H * 0.62, 0, H);
+      grad.addColorStop(0, "rgba(0,0,0,0)");
+      grad.addColorStop(1, "rgba(0,0,0,0.42)");
+      octx.fillStyle = grad;
+      octx.fillRect(0, H * 0.62, W, H * 0.38);
 
-    try {
-      if (!logoImgRef.current) {
-        await new Promise<void>((resolve) => {
-          const img = new Image();
-          img.crossOrigin = "anonymous";
-          img.src = "/logo.png";
-          img.onload = () => {
-            logoImgRef.current = img;
-            resolve();
-          };
-          img.onerror = () => resolve();
-          setTimeout(() => resolve(), 1500);
-        });
+      const logo = logoImgRef.current;
+      if (logo && logo.complete && logo.naturalWidth > 0) {
+        const logoW = Math.round(W * 0.2);
+        const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
+        octx.drawImage(logo, Math.round(W * 0.032), Math.round(H * 0.04), logoW, logoH);
       }
 
-      // 1) Audio nhẹ: captureStream() — không AudioContext (tránh crash)
-      const cap =
-        (audio as any).captureStream?.bind(audio) ||
-        (audio as any).mozCaptureStream?.bind(audio);
-      if (cap) {
-        audioStream = cap();
-      } else {
-        // Fallback AudioContext tối giản
+      const title = (songTitle || "").toUpperCase().slice(0, 90);
+      const sub = (artist || "").toUpperCase().slice(0, 60);
+      const leftPad = Math.round(W * 0.0376);
+      const barW = Math.max(2, Math.round(W * 0.002));
+      const titleSize = Math.round(W * 0.024);
+      const subSize = Math.round(W * 0.015);
+      const textX = leftPad + barW + Math.round(W * 0.014);
+      const baseY = H - Math.round(H * 0.075);
+      const fontTitle = `300 ${titleSize}px "Be Vietnam Pro", sans-serif`;
+      const fontSub = `500 ${subSize}px Inter, sans-serif`;
+      octx.font = fontTitle;
+      const titleH = titleSize * 1.15;
+      octx.font = fontSub;
+      const subH = subSize * 1.2;
+      const gap = Math.round(H * 0.012);
+      const blockH = titleH + gap + subH;
+      const extend = Math.round(H * 0.012);
+      const barTop = baseY - blockH - extend;
+      const barBottom = baseY + extend;
+      octx.fillStyle = "#ffffff";
+      octx.fillRect(leftPad, barTop, barW, barBottom - barTop);
+      octx.font = fontTitle;
+      octx.fillStyle = "#ffffff";
+      octx.shadowColor = "rgba(0,0,0,0.5)";
+      octx.shadowBlur = 4;
+      octx.textAlign = "left";
+      octx.textBaseline = "bottom";
+      octx.fillText(title, textX, baseY - subH - gap);
+      octx.font = fontSub;
+      octx.fillStyle = "rgba(255,255,255,0.92)";
+      octx.fillText(sub, textX, baseY);
+      octx.shadowBlur = 0;
+    };
+
+    if (!logoImgRef.current) {
+      await new Promise<void>((resolve) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.src = "/logo.png";
+        img.onload = () => {
+          logoImgRef.current = img;
+          resolve();
+        };
+        img.onerror = () => resolve();
+        setTimeout(() => resolve(), 1500);
+      });
+    }
+    paintOverlay();
+
+    const drawFast = () => {
+      const vw = video.videoWidth || W;
+      const vh = video.videoHeight || H;
+      const base = Math.max(W / vw, H / vh);
+      const dw = vw * base;
+      const dh = vh * base;
+      const dx = (W - dw) / 2;
+      const dy = (H - dh) / 2;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+      try {
+        ctx.drawImage(video, dx, dy, dw, dh);
+      } catch {}
+      ctx.drawImage(overlay, 0, 0);
+    };
+
+    const pickMime = () => {
+      const list = [
+        "video/webm;codecs=vp8,opus",
+        "video/webm;codecs=vp8",
+        "video/webm",
+        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+        "video/mp4",
+      ];
+      return (
+        list.find((m) => {
+          try {
+            return MediaRecorder.isTypeSupported(m);
+          } catch {
+            return false;
+          }
+        }) || "video/webm"
+      );
+    };
+    const mime = pickMime();
+    const ext = mime.includes("mp4") ? "mp4" : "webm";
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    // Lấy audio track nhẹ
+    const getAudioTrack = (): MediaStreamTrack | null => {
+      try {
+        const cap =
+          (audio as any).captureStream?.bind(audio) ||
+          (audio as any).mozCaptureStream?.bind(audio);
+        if (cap) {
+          const s: MediaStream = cap();
+          return s.getAudioTracks()[0] || null;
+        }
+      } catch {}
+      try {
         if (!audioGraphRef.current) {
           const actx = new AudioContext();
           const source = actx.createMediaElementSource(audio);
           const dest = actx.createMediaStreamDestination();
           source.connect(dest);
           audioGraphRef.current = { ctx: actx, source };
-          audioStream = dest.stream;
-        } else {
-          const dest = audioGraphRef.current.ctx.createMediaStreamDestination();
-          try {
-            audioGraphRef.current.source.disconnect();
-          } catch {}
-          audioGraphRef.current.source.connect(dest);
-          if (audioGraphRef.current.ctx.state === "suspended") {
-            await audioGraphRef.current.ctx.resume();
-          }
-          audioStream = dest.stream;
+          return dest.stream.getAudioTracks()[0] || null;
         }
-      }
-
-      video.loop = true;
-      video.muted = true;
-      video.playsInline = true;
-
-      // 2) Canvas 60fps stream — encoder sẽ nhận frame đã vẽ
-      canvasStream = canvas.captureStream(60);
-      try {
-        canvasStream.getVideoTracks()[0].contentHint = "motion";
-      } catch {}
-
-      const tracks: MediaStreamTrack[] = [
-        ...canvasStream.getVideoTracks(),
-        ...(audioStream?.getAudioTracks() || []),
-      ];
-      combined = new MediaStream(tracks);
-
-      const candidates = [
-        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-        "video/mp4",
-        "video/webm;codecs=vp8,opus",
-        "video/webm;codecs=vp9,opus",
-        "video/webm",
-      ];
-      const mime =
-        candidates.find((m) => {
-          try {
-            return MediaRecorder.isTypeSupported(m);
-          } catch {
-            return false;
-          }
-        }) || "video/webm";
-      const isMp4 = mime.includes("mp4");
-      const ext = isMp4 ? "mp4" : "webm";
-
-      // 3) Ghi thẳng ra ổ đĩa (Chrome/Edge) — chống OOM
-      try {
-        const wAny = window as any;
-        if (typeof wAny.showSaveFilePicker === "function") {
-          const handle = await wAny.showSaveFilePicker({
-            suggestedName: `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p60.${ext}`,
-            types: [
-              {
-                description: "Video",
-                accept: isMp4
-                  ? { "video/mp4": [".mp4"] }
-                  : { "video/webm": [".webm"] },
-              },
-            ],
-          });
-          writable = await handle.createWritable();
-          useDiskStream = true;
-          setStatus("Đang ghi thẳng ra file (ít tốn RAM)...");
-        }
-      } catch (pickerErr: any) {
-        // User cancel picker
-        if (pickerErr?.name === "AbortError") {
-          setStatus("Đã hủy chọn file");
-          setIsRecording(false);
-          stopTracks(canvasStream);
-          stopTracks(audioStream);
-          return;
-        }
-        useDiskStream = false;
-      }
-
-      // Bitrate vừa: 720p50–60 vẫn đẹp, không phá RAM
-      let rec: MediaRecorder;
-      const brList = [5_500_000, 4_500_000, 3_500_000];
-      let made: MediaRecorder | null = null;
-      for (const br of brList) {
+        const dest = audioGraphRef.current.ctx.createMediaStreamDestination();
         try {
-          made = new MediaRecorder(combined, {
-            mimeType: mime,
-            videoBitsPerSecond: br,
-            audioBitsPerSecond: 160_000,
-          });
-          break;
-        } catch {
-          made = null;
-        }
+          audioGraphRef.current.source.disconnect();
+        } catch {}
+        audioGraphRef.current.source.connect(dest);
+        return dest.stream.getAudioTracks()[0] || null;
+      } catch {
+        return null;
       }
-      if (!made) made = new MediaRecorder(combined, { mimeType: mime });
-      rec = made;
-      recorder = rec;
-      recorderRef.current = rec;
+    };
 
-      rec.ondataavailable = async (e) => {
-        if (!e.data || e.data.size === 0) return;
-        if (useDiskStream && writable) {
-          try {
-            await writable.write(e.data);
-          } catch (err) {
-            console.warn("disk write", err);
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+
+    const parts: string[] = [];
+    let partIndex = 0;
+    const numParts = Math.ceil(total / segmentSec);
+
+    try {
+      setStatus(
+        lowEnd
+          ? `Máy yếu: xuất ${numParts} đoạn × ~${segmentSec}s · 720p${targetFps}`
+          : `Xuất ${numParts} đoạn · 720p${targetFps}`
+      );
+
+      for (let segStart = 0; segStart < total; segStart += segmentSec) {
+        const segLen = Math.min(segmentSec, total - segStart);
+        partIndex += 1;
+        setStatus(`Đoạn ${partIndex}/${numParts} (${segLen.toFixed(0)}s)...`);
+        setProgress(Math.round((segStart / total) * 100));
+
+        // Seek audio
+        audio.pause();
+        video.pause();
+        audio.currentTime = segStart;
+        // video nền loop — không cần seek chính xác
+
+        await sleep(lowEnd ? 400 : 150);
+
+        const canvasStream = canvas.captureStream(targetFps);
+        try {
+          canvasStream.getVideoTracks()[0].contentHint = "motion";
+        } catch {}
+
+        const aTrack = getAudioTrack();
+        const tracks: MediaStreamTrack[] = [
+          ...canvasStream.getVideoTracks(),
+          ...(aTrack ? [aTrack] : []),
+        ];
+        const combined = new MediaStream(tracks);
+
+        const chunks: Blob[] = [];
+        let rec: MediaRecorder;
+        try {
+          rec = new MediaRecorder(combined, {
+            mimeType: mime,
+            videoBitsPerSecond: vBitrate,
+            audioBitsPerSecond: aBitrate,
+          });
+        } catch {
+          rec = new MediaRecorder(combined, { mimeType: mime });
+        }
+
+        rec.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) chunks.push(e.data);
+        };
+
+        const stopped = new Promise<void>((resolve, reject) => {
+          rec.onstop = () => resolve();
+          rec.onerror = () => reject(new Error("MediaRecorder lỗi đoạn " + partIndex));
+        });
+
+        drawFast();
+        await video.play();
+        await audio.play();
+
+        // Nếu audio không đúng vị trí (một số mobile), bỏ qua
+        try {
+          if (Math.abs(audio.currentTime - segStart) > 1) {
+            audio.currentTime = segStart;
           }
-        } else {
-          diskChunks.push(e.data);
-        }
-      };
+        } catch {}
 
-      const stopped = new Promise<void>((resolve, reject) => {
-        rec.onstop = () => resolve();
-        rec.onerror = () => reject(new Error("MediaRecorder lỗi"));
-      });
+        rec.start(lowEnd ? 2000 : 1000);
 
-      audio.pause();
-      video.pause();
-      audio.currentTime = 0;
-      drawFrame(ctx, video, W, H, 0);
+        let drawing = true;
+        let lastDraw = 0;
+        const t0 = performance.now();
+        const segEndTime = segStart + segLen;
 
-      await video.play();
-      await audio.play();
-
-      // timeslice 1s khi stream disk; 2s khi giữ RAM
-      rec.start(useDiskStream ? 1000 : 2000);
-
-      const t0 = performance.now();
-      // 4) Vẽ adaptive 50–60fps: bỏ frame nếu máy không kịp (chống lag/crash)
-      const loop = (ts: number) => {
-        if (!drawing) return;
-        const elapsed = ts - lastDrawTs;
-        // target ~55fps midpoint; skip nếu quá sớm
-        if (elapsed >= minFrameMs) {
-          lastDrawTs = ts;
-          try {
-            drawFrame(ctx, video, W, H, 0);
-          } catch {}
-        }
-        if (ts - lastProgTs > 400) {
-          lastProgTs = ts;
-          const t = Math.min(total, audio.currentTime || (ts - t0) / 1000);
-          setProgress(Math.min(99, Math.round((t / total) * 100)));
-        }
-        rafRef.current = requestAnimationFrame(loop);
-      };
-      rafRef.current = requestAnimationFrame(loop);
-
-      await new Promise<void>((resolve) => {
-        const hard = window.setTimeout(() => resolve(), total * 1000 + 1200);
-        const check = () => {
-          if (audio.ended || (audio.currentTime || 0) >= total - 0.1) {
-            window.clearTimeout(hard);
-            resolve();
+        const loop = (ts: number) => {
+          if (!drawing) return;
+          if (ts - lastDraw >= frameInterval) {
+            lastDraw = ts;
+            drawFast();
+          }
+          // dừng khi đủ đoạn
+          const nowA = audio.currentTime || segStart + (ts - t0) / 1000;
+          if (nowA >= segEndTime - 0.05 || audio.ended) {
+            drawing = false;
             return;
           }
-          window.setTimeout(check, 150);
+          rafRef.current = requestAnimationFrame(loop);
         };
-        check();
-      });
+        rafRef.current = requestAnimationFrame(loop);
 
-      drawing = false;
-      cancelAnimationFrame(rafRef.current);
-      try {
-        drawFrame(ctx, video, W, H, 0);
-      } catch {}
-      try {
-        video.pause();
-        audio.pause();
-      } catch {}
-
-      if (rec.state === "recording") {
-        try {
-          rec.requestData();
-        } catch {}
-        rec.stop();
-      }
-      await stopped;
-
-      // Đóng file disk
-      if (useDiskStream && writable) {
-        try {
-          await writable.close();
-        } catch {}
-        writable = null;
-        setProgress(100);
-        setStatus(
-          `✅ Đã lưu file 720p ~50–60fps · ${total.toFixed(0)}s (ghi stream, ít crash)`
-        );
-        setOutputUrl(null); // file đã nằm trên máy
-      } else {
-        const blob = new Blob(diskChunks, {
-          type: isMp4 ? "video/mp4" : "video/webm",
+        // Chờ hết đoạn
+        await new Promise<void>((resolve) => {
+          const hard = window.setTimeout(
+            () => resolve(),
+            segLen * 1000 + 800
+          );
+          const check = () => {
+            const t = audio.currentTime || 0;
+            if (t >= segEndTime - 0.08 || audio.ended || !drawing) {
+              window.clearTimeout(hard);
+              resolve();
+              return;
+            }
+            window.setTimeout(check, 100);
+          };
+          check();
         });
-        diskChunks.length = 0;
-        if (blob.size < 5000) throw new Error("File xuất quá nhỏ.");
+
+        drawing = false;
+        cancelAnimationFrame(rafRef.current);
+        try {
+          video.pause();
+          audio.pause();
+        } catch {}
+
+        if (rec.state === "recording") {
+          try {
+            rec.requestData();
+          } catch {}
+          rec.stop();
+        }
+        await stopped;
+
+        // Stop tracks ngay
+        combined.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+        canvasStream.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+
+        const blob = new Blob(chunks, { type: mime.includes("mp4") ? "video/mp4" : "video/webm" });
+        chunks.length = 0;
+
+        if (blob.size < 1000) {
+          throw new Error(`Đoạn ${partIndex} rỗng — thử lại.`);
+        }
+
+        // Tải từng đoạn ngay → giải phóng RAM
         const url = URL.createObjectURL(blob);
-        setOutputUrl(url);
-        setProgress(100);
+        parts.push(url);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p60.${ext}`;
+        a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 30)}_p${partIndex}_720p${targetFps}.${ext}`;
         document.body.appendChild(a);
         a.click();
         a.remove();
-        setStatus(
-          `✅ 720p ~50–60fps · ${total.toFixed(0)}s · ${ext.toUpperCase()} · ${(blob.size / 1024 / 1024).toFixed(1)}MB`
-        );
+
+        // Thu hồi URL sau 15s
+        setTimeout(() => {
+          try {
+            URL.revokeObjectURL(url);
+          } catch {}
+        }, 15000);
+
+        setProgress(Math.round(((segStart + segLen) / total) * 100));
+
+        // Nghỉ cho máy yếu nhả RAM
+        await sleep(lowEnd ? 900 : 300);
+        if (lowEnd && (window as any).gc) {
+          try {
+            (window as any).gc();
+          } catch {}
+        }
       }
 
-      stopTracks(canvasStream);
-      // không stop audio element tracks nếu còn dùng preview — chỉ stop clone
-      if (audioStream && !cap) stopTracks(audioStream);
-      canvasStream = null;
-      combined = null;
+      setProgress(100);
+      setOutputUrl(parts[0] || null);
+      setStatus(
+        `✅ Xong ${partIndex} đoạn · 720p${targetFps} · tổng ~${total.toFixed(0)}s. Ghép các file _p1 _p2… bằng CapCut/VN nếu cần 1 file.`
+      );
+      if (partIndex > 1) {
+        setError(
+          `Máy yếu/bài dài → đã tách ${partIndex} file để không crash. Mỗi file ~${segmentSec}s, đủ 720p${targetFps}.`
+        );
+      }
     } catch (e: any) {
       console.error(e);
-      drawing = false;
       cancelAnimationFrame(rafRef.current);
       try {
         video.pause();
         audio.pause();
       } catch {}
-      try {
-        if (recorder && recorder.state === "recording") recorder.stop();
-      } catch {}
-      try {
-        if (writable) await writable.abort?.();
-      } catch {}
-      stopTracks(canvasStream);
-      stopTracks(combined);
-      diskChunks.length = 0;
       setError(
         e?.message ||
-          "Xuất gián đoạn. Dùng Chrome, khi được hỏi hãy chọn nơi lưu file (ghi stream)."
+          "Vẫn lỗi trên máy yếu. Thử WiFi ổn định, Chrome mới, đóng app khác."
       );
       setStatus("Thất bại");
     } finally {
