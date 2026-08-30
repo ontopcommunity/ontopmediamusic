@@ -285,7 +285,7 @@ export default function Home() {
       return;
     }
     if (typeof MediaRecorder === "undefined") {
-      setError("Trình duyệt không hỗ trợ MediaRecorder. Dùng Chrome/Edge.");
+      setError("Trình duyệt không hỗ trợ ghi video. Dùng Chrome/Edge.");
       return;
     }
 
@@ -293,20 +293,22 @@ export default function Home() {
     setError(null);
     setOutputUrl(null);
     setProgress(0);
-    setStatus("Đang xuất MP4 720p60 full theo nhạc...");
+    setStatus("Đang xuất 720p60 (tối ưu chống crash)...");
 
     const video = bgVideoRef.current;
     const audio = audioRef.current;
     const canvas = canvasRef.current!;
     const W = 1280;
     const H = 720;
-    canvas.width = W;
-    canvas.height = H;
+    // Chỉ set size 1 lần
+    if (canvas.width !== W || canvas.height !== H) {
+      canvas.width = W;
+      canvas.height = H;
+    }
     const ctx = canvas.getContext("2d", { alpha: false })!;
     ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
+    ctx.imageSmoothingQuality = "medium"; // nhẹ hơn "high", vẫn ổn 720p
 
-    // FULL thời lượng nhạc — không cắt
     const total = Math.max(
       3,
       duration || (isFinite(audio.duration) ? audio.duration : 30)
@@ -318,8 +320,28 @@ export default function Home() {
     let drawing = true;
     let rvfcHandle: number | null = null;
     let lastProgTs = 0;
+    let audioCtx: AudioContext | null = null;
+    let dest: MediaStreamAudioDestinationNode | null = null;
+
+    const cleanupTracks = () => {
+      try {
+        combined?.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+        canvasStream?.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+        });
+      } catch {}
+      combined = null;
+      canvasStream = null;
+    };
 
     try {
+      // Logo
       if (!logoImgRef.current) {
         await new Promise<void>((resolve) => {
           const img = new Image();
@@ -330,23 +352,16 @@ export default function Home() {
             resolve();
           };
           img.onerror = () => resolve();
-          setTimeout(() => resolve(), 2500);
+          setTimeout(() => resolve(), 2000);
         });
       }
 
-      try {
-        await (document as any).fonts?.load?.('300 28px "Be Vietnam Pro"');
-        await (document as any).fonts?.load?.("500 18px Inter");
-      } catch {}
-
-      let audioCtx: AudioContext;
-      let dest: MediaStreamAudioDestinationNode;
+      // Audio graph — không phát ra loa khi export (đỡ tải CPU)
       if (!audioGraphRef.current) {
         audioCtx = new AudioContext();
         const source = audioCtx.createMediaElementSource(audio);
         dest = audioCtx.createMediaStreamDestination();
         source.connect(dest);
-        source.connect(audioCtx.destination);
         audioGraphRef.current = { ctx: audioCtx, source };
       } else {
         audioCtx = audioGraphRef.current.ctx;
@@ -355,7 +370,6 @@ export default function Home() {
           audioGraphRef.current.source.disconnect();
         } catch {}
         audioGraphRef.current.source.connect(dest);
-        audioGraphRef.current.source.connect(audioCtx.destination);
       }
       if (audioCtx.state === "suspended") await audioCtx.resume();
 
@@ -363,136 +377,137 @@ export default function Home() {
       video.muted = true;
       video.playsInline = true;
 
-      // 60 FPS
+      // 720p60 — bitrate vừa đủ đẹp, tránh 12Mbps gây OOM
       canvasStream = canvas.captureStream(60);
       const vTrack = canvasStream.getVideoTracks()[0];
       try {
         vTrack.contentHint = "motion";
       } catch {}
-      const aTrack = dest.stream.getAudioTracks()[0];
+      const aTrack = dest!.stream.getAudioTracks()[0];
       combined = new MediaStream(
         [vTrack, aTrack].filter(Boolean) as MediaStreamTrack[]
       );
 
-      // Ưu tiên MP4
-      const mp4Mimes = [
+      // Ưu tiên MP4 native; không thì webm (ổn định, không chạy ffmpeg trong RAM)
+      const candidates = [
         "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
         "video/mp4;codecs=avc1.4D401F,mp4a.40.2",
-        "video/mp4;codecs=avc1.64001F,mp4a.40.2",
         "video/mp4",
-      ];
-      const webmMimes = [
+        "video/webm;codecs=vp8,opus", // vp8 nhẹ hơn vp9 khi encode realtime
         "video/webm;codecs=vp9,opus",
-        "video/webm;codecs=vp8,opus",
         "video/webm",
       ];
-      const pickMime = (list: string[]) =>
-        list.find((m) => {
+      const mime =
+        candidates.find((m) => {
           try {
             return MediaRecorder.isTypeSupported(m);
           } catch {
             return false;
           }
-        });
-
-      let mime = pickMime(mp4Mimes) || pickMime(webmMimes) || "video/webm";
-      const nativeMp4 = mime.includes("mp4");
+        }) || "video/webm";
+      const isMp4 = mime.includes("mp4");
 
       chunksRef.current = [];
-      // 720p60 bitrate cao + audio gần lossless nguồn
-      const recOpts: MediaRecorderOptions = {
-        mimeType: mime,
-        videoBitsPerSecond: 12_000_000,
-        audioBitsPerSecond: 320_000,
-      };
-      try {
-        recorder = new MediaRecorder(combined, recOpts);
-      } catch {
+
+      const tryBitrates = [6_500_000, 5_000_000, 3_500_000];
+      let created = false;
+      for (const vbr of tryBitrates) {
+        try {
+          recorder = new MediaRecorder(combined, {
+            mimeType: mime,
+            videoBitsPerSecond: vbr,
+            audioBitsPerSecond: 192_000,
+          });
+          created = true;
+          break;
+        } catch {
+          recorder = null;
+        }
+      }
+      if (!created) {
         recorder = new MediaRecorder(combined, { mimeType: mime });
       }
       recorderRef.current = recorder;
 
       recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+        if (e.data && e.data.size > 0) {
+          chunksRef.current.push(e.data);
+        }
       };
 
       const stopped = new Promise<Blob>((resolve, reject) => {
         recorder!.onstop = () => {
           resolve(
             new Blob(chunksRef.current, {
-              type: nativeMp4 ? "video/mp4" : "video/webm",
+              type: isMp4 ? "video/mp4" : "video/webm",
             })
           );
         };
-        recorder!.onerror = () => reject(new Error("MediaRecorder lỗi khi ghi"));
+        recorder!.onerror = () => reject(new Error("MediaRecorder lỗi"));
       });
 
       audio.pause();
       video.pause();
       audio.currentTime = 0;
 
+      // Vẽ 1 frame trước khi start để tránh đoạn đen đầu
+      drawFrame(ctx, video, W, H, 0);
+
       await video.play();
       await audio.play();
-      recorder.start(400);
+
+      // timeslice 1s — ít object nhỏ, ít GC thrash
+      recorder.start(1000);
 
       const t0 = performance.now();
       const paint = () => {
         if (!drawing) return;
         try {
-          // progress=0: không zoom, mượt như nguồn
           drawFrame(ctx, video, W, H, 0);
-          const now = performance.now();
-          if (now - lastProgTs > 200) {
-            lastProgTs = now;
-            const elapsed = audio.currentTime || (now - t0) / 1000;
-            setProgress(Math.min(99, Math.round((elapsed / total) * 100)));
-          }
         } catch {}
+        const now = performance.now();
+        // UI progress tối đa ~4 lần/s — tránh re-render làm jank/crash
+        if (now - lastProgTs > 250) {
+          lastProgTs = now;
+          const elapsed = Math.min(
+            total,
+            audio.currentTime || (now - t0) / 1000
+          );
+          setProgress(Math.min(99, Math.round((elapsed / total) * 100)));
+        }
       };
 
-      const useRvfc =
-        typeof (video as any).requestVideoFrameCallback === "function";
-      if (useRvfc) {
-        const onFrame = () => {
-          if (!drawing) return;
-          paint();
-          rvfcHandle = (video as any).requestVideoFrameCallback(onFrame);
-        };
-        rvfcHandle = (video as any).requestVideoFrameCallback(onFrame);
-      } else {
-        const loop = () => {
-          if (!drawing) return;
-          paint();
-          rafRef.current = requestAnimationFrame(loop);
-        };
+      // Ưu tiên rAF 60fps (nhẹ và ổn định hơn rvfc trên một số máy)
+      const loop = () => {
+        if (!drawing) return;
+        paint();
         rafRef.current = requestAnimationFrame(loop);
-      }
+      };
+      rafRef.current = requestAnimationFrame(loop);
 
-      // Chờ FULL nhạc
+      // Chờ full nhạc
       await new Promise<void>((resolve) => {
+        const hard = window.setTimeout(() => resolve(), total * 1000 + 1000);
         const check = () => {
-          if (audio.ended || (audio.currentTime || 0) >= total - 0.05) {
+          if (audio.ended || (audio.currentTime || 0) >= total - 0.08) {
+            window.clearTimeout(hard);
             resolve();
             return;
           }
-          setTimeout(check, 80);
+          window.setTimeout(check, 120);
         };
-        setTimeout(() => resolve(), total * 1000 + 800);
         check();
       });
 
       drawing = false;
-      if (rvfcHandle != null && (video as any).cancelVideoFrameCallback) {
-        try {
-          (video as any).cancelVideoFrameCallback(rvfcHandle);
-        } catch {}
-      }
       cancelAnimationFrame(rafRef.current);
       try {
         drawFrame(ctx, video, W, H, 0);
       } catch {}
-      video.pause();
-      audio.pause();
+      try {
+        video.pause();
+        audio.pause();
+      } catch {}
 
       if (recorder.state === "recording") {
         try {
@@ -501,80 +516,17 @@ export default function Home() {
         recorder.stop();
       }
 
-      let blob = await stopped;
+      const blob = await stopped;
+      cleanupTracks();
 
-      try {
-        combined?.getTracks().forEach((t) => t.stop());
-        canvasStream?.getTracks().forEach((t) => t.stop());
-      } catch {}
+      // Giải phóng chunks sớm
+      chunksRef.current = [];
 
       if (blob.size < 5000) {
-        throw new Error("File xuất quá nhỏ. Thử Chrome + Load Preview lại.");
+        throw new Error("File xuất quá nhỏ. Thử lại trên Chrome.");
       }
 
-      // Nếu chưa phải MP4 → convert bằng ffmpeg.wasm (720p60, AAC 320k)
-      if (!nativeMp4 && !blob.type.includes("mp4")) {
-        setStatus("Đang chuyển sang MP4 720p60 (giữ chất lượng)...");
-        setProgress(99);
-        try {
-          const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-          const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
-          const ffmpeg = new FFmpeg();
-          const base = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
-          await ffmpeg.load({
-            coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
-            wasmURL: await toBlobURL(
-              `${base}/ffmpeg-core.wasm`,
-              "application/wasm"
-            ),
-          });
-          const inName = "input.webm";
-          const outName = "output.mp4";
-          await ffmpeg.writeFile(inName, await fetchFile(blob));
-          // ultrafast + CRF 18: mượt, gần nguồn; audio 320k AAC
-          await ffmpeg.exec([
-            "-i",
-            inName,
-            "-vf",
-            "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=60",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "18",
-            "-r",
-            "60",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "320k",
-            "-movflags",
-            "+faststart",
-            outName,
-          ]);
-          const data = await ffmpeg.readFile(outName);
-          const u8 =
-            typeof data === "string"
-              ? new TextEncoder().encode(data)
-              : new Uint8Array(data as Uint8Array);
-          const ab = new ArrayBuffer(u8.byteLength);
-          new Uint8Array(ab).set(u8);
-          blob = new Blob([ab], { type: "video/mp4" });
-          try {
-            await ffmpeg.deleteFile(inName);
-            await ffmpeg.deleteFile(outName);
-          } catch {}
-        } catch (convErr) {
-          console.warn("MP4 convert failed, keep webm", convErr);
-          setError(
-            "Trình duyệt không ghi MP4 native; convert FFmpeg lỗi. File webm vẫn tải về — mở bằng VLC/Chrome."
-          );
-        }
-      }
-
-      const isMp4 = blob.type.includes("mp4");
-      const ext = isMp4 ? "mp4" : "webm";
+      const ext = isMp4 || blob.type.includes("mp4") ? "mp4" : "webm";
       const url = URL.createObjectURL(blob);
       setOutputUrl(url);
       setProgress(100);
@@ -587,8 +539,13 @@ export default function Home() {
       a.remove();
 
       setStatus(
-        `✅ Full ${total.toFixed(0)}s · 720p60 · ${ext.toUpperCase()} · ${(blob.size / 1024 / 1024).toFixed(1)}MB`
+        `✅ 720p60 · ${total.toFixed(0)}s · ${ext.toUpperCase()} · ${(blob.size / 1024 / 1024).toFixed(1)}MB`
       );
+      if (ext === "webm") {
+        setError(
+          "Trình duyệt không ghi MP4 native — đã xuất WebM 720p60 (mở bằng Chrome/VLC). Chất lượng giữ nguyên."
+        );
+      }
     } catch (e: any) {
       console.error(e);
       drawing = false;
@@ -600,7 +557,12 @@ export default function Home() {
       try {
         if (recorder && recorder.state === "recording") recorder.stop();
       } catch {}
-      setError(e?.message || "Xuất thất bại. Dùng Chrome/Edge.");
+      cleanupTracks();
+      chunksRef.current = [];
+      setError(
+        e?.message ||
+          "Xuất bị gián đoạn (thiếu RAM). Thử Chrome, tắt tab khác, hoặc dùng bài ngắn hơn."
+      );
       setStatus("Thất bại");
     } finally {
       setIsRecording(false);
