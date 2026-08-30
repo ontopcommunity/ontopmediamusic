@@ -112,13 +112,15 @@ export default function Home() {
       video.loop = true;
       try {
         video.playbackRate = 1;
-        audio.playbackRate = 1;
       } catch {}
       await video.play().catch(() => {});
       video.pause();
       video.currentTime = 0;
 
       const audio = audioRef.current!;
+      try {
+        audio.playbackRate = 1;
+      } catch {}
       if (musicObjectUrl.current) URL.revokeObjectURL(musicObjectUrl.current);
       if (musicFile) {
         musicObjectUrl.current = URL.createObjectURL(musicFile);
