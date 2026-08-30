@@ -197,7 +197,7 @@ export default function Home() {
     // Logo top-left — to hơn (~14.5% width)
     const logo = logoImgRef.current;
     if (logo && logo.complete && logo.naturalWidth > 0) {
-      const logoW = Math.round(w * 0.13);
+      const logoW = Math.round(w * 0.20);
       const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
       const lx = Math.round(w * 0.032);
       const ly = Math.round(h * 0.04);
@@ -209,32 +209,31 @@ export default function Home() {
     const sub = (artist || "").toUpperCase().slice(0, 60);
 
     const leftPad = Math.round(w * 0.0376);
-    // Thanh dọc mỏng hơn
-    const barW = Math.max(2, Math.round(w * 0.0018));
-    const titleSize = Math.round(w * 0.0225);
-    const subSize = Math.round(w * 0.014);
-    const textX = leftPad + barW + Math.round(w * 0.012);
-    const baseY = h - Math.round(h * 0.078);
+    // Thanh mỏng nhưng KÉO DÀI đủ 2 dòng chữ
+    const barW = Math.max(2, Math.round(w * 0.002));
+    const titleSize = Math.round(w * 0.024);
+    const subSize = Math.round(w * 0.015);
+    const textX = leftPad + barW + Math.round(w * 0.014);
+    const baseY = h - Math.round(h * 0.075);
 
-    // Tên: Be Vietnam Pro Light (mỏng) · Tác giả: Inter Medium — có tiếng Việt
     const fontTitle = `300 ${titleSize}px "Be Vietnam Pro", "Segoe UI", sans-serif`;
     const fontSub = `500 ${subSize}px Inter, "Segoe UI", sans-serif`;
 
     ctx.textAlign = "left";
     ctx.textBaseline = "bottom";
     ctx.font = fontTitle;
-    const titleH = titleSize * 1.05;
+    const titleH = titleSize * 1.15;
     ctx.font = fontSub;
-    const subH = subSize * 1.1;
-    const gap = Math.round(h * 0.01);
+    const subH = subSize * 1.2;
+    const gap = Math.round(h * 0.012);
     const blockH = titleH + gap + subH;
-    // Căn thanh với khối chữ, nhích xuống một chút cho khớp mắt
-    const barNudge = Math.round(h * 0.008);
-    const barTop = baseY - blockH + barNudge;
-    const barBottom = baseY + Math.round(h * 0.004);
+    // Thanh dài bằng khối chữ, hơi kéo thêm trên/dưới
+    const extend = Math.round(h * 0.012);
+    const barTop = baseY - blockH - extend;
+    const barBottom = baseY + extend;
 
     ctx.fillStyle = "#ffffff";
-    ctx.fillRect(leftPad, barTop, barW, Math.max(2, barBottom - barTop));
+    ctx.fillRect(leftPad, barTop, barW, barBottom - barTop);
 
     ctx.font = fontTitle;
     ctx.fillStyle = "#ffffff";
@@ -610,9 +609,9 @@ export default function Home() {
                 alt="Ontop"
                 className="absolute z-10 object-contain pointer-events-none"
                 style={{
-                  left: "3%",
-                  top: "3.5%",
-                  width: "13%",
+                  left: "2.8%",
+                  top: "3.2%",
+                  width: "20%",
                   height: "auto",
                 }}
               />
@@ -620,19 +619,19 @@ export default function Home() {
               {/* Chữ góc dưới trái + gạch dọc — tỉ lệ đo từ ảnh mẫu */}
               <div
                 className="absolute z-10 flex items-stretch pointer-events-none"
-                style={{ left: "3.76%", bottom: "7%", maxWidth: "62%" }}
+                style={{ left: "3.5%", bottom: "7%", maxWidth: "70%" }}
               >
                 <div
-                  className="bg-white shrink-0 self-stretch"
-                  style={{ width: 2, marginTop: "0.35em" }}
+                  className="bg-white shrink-0"
+                  style={{ width: 2, alignSelf: "stretch", minHeight: "100%" }}
                 />
-                <div className="flex flex-col justify-center min-w-0" style={{ paddingLeft: "2.2%" }}>
+                <div className="flex flex-col justify-center min-w-0 py-[0.4em]" style={{ paddingLeft: "2.4%" }}>
                   <p
                     className="text-white uppercase leading-none whitespace-nowrap"
                     style={{
                       fontFamily: "var(--font-title), 'Be Vietnam Pro', sans-serif",
                       fontWeight: 300,
-                      fontSize: "2.25cqw",
+                      fontSize: "2.5cqw",
                       textShadow: "0 1px 4px rgba(0,0,0,0.6)",
                       letterSpacing: "0.02em",
                     }}
@@ -644,9 +643,9 @@ export default function Home() {
                     style={{
                       fontFamily: "var(--font-artist), Inter, sans-serif",
                       fontWeight: 500,
-                      fontSize: "1.4cqw",
+                      fontSize: "1.55cqw",
                       textShadow: "0 1px 3px rgba(0,0,0,0.55)",
-                      marginTop: "0.5em",
+                      marginTop: "0.55em",
                       letterSpacing: "0.08em",
                     }}
                   >
