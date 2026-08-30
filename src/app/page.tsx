@@ -110,6 +110,10 @@ export default function Home() {
       video.muted = true;
       video.playsInline = true;
       video.loop = true;
+      try {
+        video.playbackRate = 1;
+        audio.playbackRate = 1;
+      } catch {}
       await video.play().catch(() => {});
       video.pause();
       video.currentTime = 0;
@@ -546,8 +550,16 @@ export default function Home() {
         });
 
         drawFast();
+        try {
+          video.playbackRate = 1;
+          audio.playbackRate = 1;
+        } catch {}
         await video.play();
         await audio.play();
+        try {
+          video.playbackRate = 1;
+          audio.playbackRate = 1;
+        } catch {}
         rec.start(2000);
 
         let drawing = true;
@@ -607,13 +619,12 @@ export default function Home() {
         await sleep(lowEnd ? 600 : 200);
       }
 
-      // ===== PHASE 2: ghép 1 file =====
-      setStatus("Đang ghép thành 1 file...");
+      // ===== PHASE 2: ghép 1 file (re-encode để hết lỗi nhạc 0.5x) =====
+      setStatus("Đang ghép + chuẩn hóa tốc độ nhạc...");
       setProgress(75);
 
       let finalBlob: Blob | null = null;
 
-      // 2a. Thử ffmpeg -c copy (nhanh, không re-encode)
       try {
         const { FFmpeg } = await import("@ffmpeg/ffmpeg");
         const { toBlobURL } = await import("@ffmpeg/util");
@@ -629,55 +640,58 @@ export default function Home() {
           const b = await idbGet(segKeys[i]);
           if (!b) throw new Error("Thiếu đoạn " + i);
           const buf = new Uint8Array(await b.arrayBuffer());
-          const name = `seg${i}.${ext}`;
+          const name = `seg${i}.webm`;
           await ffmpeg.writeFile(name, buf);
           listLines.push(`file '${name}'`);
-          setProgress(75 + Math.round(((i + 1) / segKeys.length) * 10));
+          setProgress(75 + Math.round(((i + 1) / segKeys.length) * 8));
         }
         await ffmpeg.writeFile(
           "list.txt",
           new TextEncoder().encode(listLines.join("\n"))
         );
-        // -c copy: ghép không render lại → nhẹ + giữ chất lượng
+
+        // Re-encode: ép fps + sample rate 44100 → hết chậm 0.5x
+        // ultrafast để máy yếu vẫn chạy được
+        setStatus("Chuẩn hóa audio 44.1kHz + fps...");
         await ffmpeg.exec([
-          "-f",
-          "concat",
-          "-safe",
-          "0",
-          "-i",
-          "list.txt",
-          "-c",
-          "copy",
-          `out.${ext}`,
+          "-f", "concat",
+          "-safe", "0",
+          "-i", "list.txt",
+          "-r", String(targetFps),
+          "-vsync", "cfr",
+          "-c:v", "libx264",
+          "-preset", "ultrafast",
+          "-crf", "20",
+          "-pix_fmt", "yuv420p",
+          "-c:a", "aac",
+          "-ar", "44100",
+          "-ac", "2",
+          "-b:a", "192k",
+          "-movflags", "+faststart",
+          "out.mp4",
         ]);
-        const data = await ffmpeg.readFile(`out.${ext}`);
+
+        const data = await ffmpeg.readFile("out.mp4");
         const u8 =
           typeof data === "string"
             ? new TextEncoder().encode(data)
             : new Uint8Array(data as Uint8Array);
         const ab = new ArrayBuffer(u8.byteLength);
         new Uint8Array(ab).set(u8);
-        finalBlob = new Blob([ab], {
-          type: isMp4 ? "video/mp4" : "video/webm",
-        });
+        finalBlob = new Blob([ab], { type: "video/mp4" });
+
         try {
           for (let i = 0; i < segKeys.length; i++) {
-            await ffmpeg.deleteFile(`seg${i}.${ext}`);
+            await ffmpeg.deleteFile(`seg${i}.webm`);
           }
           await ffmpeg.deleteFile("list.txt");
-          await ffmpeg.deleteFile(`out.${ext}`);
+          await ffmpeg.deleteFile("out.mp4");
         } catch {}
       } catch (mergeErr) {
-        console.warn("ffmpeg concat failed, blob join fallback", mergeErr);
-        // 2b. Fallback: nối Blob tuần tự (webm cùng codec thường chơi được)
-        const parts: Blob[] = [];
-        for (const k of segKeys) {
-          const b = await idbGet(k);
-          if (b) parts.push(b);
-        }
-        finalBlob = new Blob(parts, {
-          type: isMp4 ? "video/mp4" : "video/webm",
-        });
+        console.warn("ffmpeg re-encode merge failed", mergeErr);
+        throw new Error(
+          "Ghép/chuẩn hóa thất bại. Thử Chrome, bài ngắn hơn, hoặc tải lại trang."
+        );
       }
 
       await idbClear();
@@ -691,12 +705,12 @@ export default function Home() {
       setOutputUrl(url);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p${targetFps}.${ext}`;
+      a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p${targetFps}.mp4`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       setStatus(
-        `✅ 1 file · 720p${targetFps} · ~${total.toFixed(0)}s · ${(finalBlob.size / 1024 / 1024).toFixed(1)}MB`
+        `✅ 1 file MP4 · 720p${targetFps} · nhạc tốc độ chuẩn · ~${total.toFixed(0)}s · ${(finalBlob.size / 1024 / 1024).toFixed(1)}MB`
       );
       setError(null);
     } catch (e: any) {
@@ -986,7 +1000,7 @@ export default function Home() {
           {outputUrl && (
             <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
               <h2 className="text-lg font-semibold">File đã xuất</h2>
-              <video src={outputUrl} controls className="w-full rounded-xl bg-black max-h-64" />
+              <video src={outputUrl} controls playsInline className="w-full rounded-xl bg-black max-h-64" onLoadedMetadata={(e) => { try { e.currentTarget.playbackRate = 1; } catch {} }} />
               <a
                 href={outputUrl}
                 download
