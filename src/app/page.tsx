@@ -554,17 +554,13 @@ export default function Home() {
             outName,
           ]);
           const data = await ffmpeg.readFile(outName);
-          let bytes: Uint8Array;
-          if (data instanceof Uint8Array) {
-            bytes = data;
-          } else if (typeof data === "string") {
-            bytes = new TextEncoder().encode(data);
-          } else {
-            bytes = new Uint8Array(data as unknown as ArrayBuffer);
-          }
-          blob = new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)], {
-            type: "video/mp4",
-          });
+          const u8 =
+            typeof data === "string"
+              ? new TextEncoder().encode(data)
+              : new Uint8Array(data as Uint8Array);
+          const ab = new ArrayBuffer(u8.byteLength);
+          new Uint8Array(ab).set(u8);
+          blob = new Blob([ab], { type: "video/mp4" });
           try {
             await ffmpeg.deleteFile(inName);
             await ffmpeg.deleteFile(outName);
