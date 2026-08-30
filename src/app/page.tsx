@@ -31,6 +31,9 @@ export default function Home() {
   const bgInputRef = useRef<HTMLInputElement>(null);
   const musicInputRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const previewBoxRef = useRef<HTMLDivElement | null>(null);
+  /** scale = previewWidth / 1280 — đồng bộ mọi thiết bị */
+  const [framePx, setFramePx] = useState({ w: 320, s: 320 / 1280 });
   const chunksRef = useRef<Blob[]>([]);
   const rafRef = useRef<number>(0);
   const audioGraphRef = useRef<{
@@ -65,6 +68,20 @@ export default function Home() {
       if (musicObjectUrl.current) URL.revokeObjectURL(musicObjectUrl.current);
       cancelAnimationFrame(rafRef.current);
     };
+  }, []);
+
+  // Đồng bộ kích thước overlay theo chiều rộng khung preview (mọi máy giống tỉ lệ 1280)
+  useEffect(() => {
+    const el = previewBoxRef.current;
+    if (!el) return;
+    const apply = () => {
+      const w = el.clientWidth || 320;
+      setFramePx({ w, s: w / 1280 });
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
 
   const loadPreview = async () => {
@@ -197,7 +214,7 @@ export default function Home() {
     // Logo top-left — to hơn (~14.5% width)
     const logo = logoImgRef.current;
     if (logo && logo.complete && logo.naturalWidth > 0) {
-      const logoW = Math.round(w * 0.20);
+      const logoW = Math.round(w * 0.20); // 256@1280 — khớp preview
       const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
       const lx = Math.round(w * 0.032);
       const ly = Math.round(h * 0.04);
@@ -270,12 +287,16 @@ export default function Home() {
       setError("Chưa có preview. Bấm Load Preview trước.");
       return;
     }
+    if (typeof MediaRecorder === "undefined") {
+      setError("Trình duyệt không hỗ trợ MediaRecorder. Dùng Chrome/Edge.");
+      return;
+    }
 
     setIsRecording(true);
     setError(null);
     setOutputUrl(null);
     setProgress(0);
-    setStatus("Đang xuất video...");
+    setStatus("Đang xuất video (tối ưu ổn định)...");
 
     const video = bgVideoRef.current;
     const audio = audioRef.current;
@@ -284,11 +305,15 @@ export default function Home() {
     const H = 720;
     canvas.width = W;
     canvas.height = H;
-    const ctx = canvas.getContext("2d")!;
-    const total = Math.min(duration, 120);
+    const ctx = canvas.getContext("2d", { alpha: false })!;
+    const total = Math.min(duration, 90); // cap 90s để tránh crash bộ nhớ
+
+    let canvasStream: MediaStream | null = null;
+    let combined: MediaStream | null = null;
+    let recorder: MediaRecorder | null = null;
+    let drawing = true;
 
     try {
-      // Ensure logo loaded
       if (!logoImgRef.current) {
         await new Promise<void>((resolve) => {
           const img = new Image();
@@ -299,13 +324,16 @@ export default function Home() {
             resolve();
           };
           img.onerror = () => resolve();
-          setTimeout(() => resolve(), 3000);
+          setTimeout(() => resolve(), 2500);
         });
       }
 
-      const canvasStream = canvas.captureStream(30);
+      try {
+        await (document as any).fonts?.load?.('300 28px "Be Vietnam Pro"');
+        await (document as any).fonts?.load?.("500 18px Inter");
+      } catch {}
 
-      // Audio: create graph once
+      // Audio graph: chỉ tạo 1 lần, không nối ra loa khi export (nhẹ hơn)
       let audioCtx: AudioContext;
       let dest: MediaStreamAudioDestinationNode;
       if (!audioGraphRef.current) {
@@ -313,7 +341,7 @@ export default function Home() {
         const source = audioCtx.createMediaElementSource(audio);
         dest = audioCtx.createMediaStreamDestination();
         source.connect(dest);
-        source.connect(audioCtx.destination);
+        // không connect destination → đỡ tải khi export
         audioGraphRef.current = { ctx: audioCtx, source };
       } else {
         audioCtx = audioGraphRef.current.ctx;
@@ -322,88 +350,112 @@ export default function Home() {
           audioGraphRef.current.source.disconnect();
         } catch {}
         audioGraphRef.current.source.connect(dest);
-        audioGraphRef.current.source.connect(audioCtx.destination);
       }
 
-      const combined = new MediaStream([
-        ...canvasStream.getVideoTracks(),
-        ...dest.stream.getAudioTracks(),
-      ]);
+      if (audioCtx.state === "suspended") await audioCtx.resume();
+
+      canvasStream = canvas.captureStream(30);
+      const aTrack = dest.stream.getAudioTracks()[0];
+      const vTrack = canvasStream.getVideoTracks()[0];
+      combined = new MediaStream([vTrack, aTrack].filter(Boolean) as MediaStreamTrack[]);
 
       const mimeCandidates = [
-        "video/webm;codecs=vp9,opus",
         "video/webm;codecs=vp8,opus",
+        "video/webm;codecs=vp9,opus",
         "video/webm",
-        "video/mp4",
       ];
       const mime =
         mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
 
       chunksRef.current = [];
-      const recorder = new MediaRecorder(combined, {
+      // Bitrate ổn định, không quá cao để tránh crash mobile
+      recorder = new MediaRecorder(combined, {
         mimeType: mime,
-        videoBitsPerSecond: 5_000_000,
+        videoBitsPerSecond: 3_500_000,
+        audioBitsPerSecond: 128_000,
       });
       recorderRef.current = recorder;
 
       recorder.ondataavailable = (e) => {
-        if (e.data.size) chunksRef.current.push(e.data);
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
 
-      const done = new Promise<Blob>((resolve, reject) => {
-        recorder.onstop = () => resolve(new Blob(chunksRef.current, { type: mime }));
-        recorder.onerror = () => reject(new Error("MediaRecorder error"));
+      const stopped = new Promise<Blob>((resolve, reject) => {
+        recorder!.onstop = () => {
+          resolve(new Blob(chunksRef.current, { type: mime }));
+        };
+        recorder!.onerror = () => reject(new Error("MediaRecorder lỗi"));
       });
 
-      recorder.start(200);
       audio.currentTime = 0;
+      audio.volume = 1;
       await video.play();
       await audio.play();
-      if (audioCtx.state === "suspended") await audioCtx.resume();
 
-      // Đợi font Montserrat sẵn sàng trước khi vẽ chữ
-      try {
-        await (document as any).fonts?.load?.('300 28px "Be Vietnam Pro"');
-        await (document as any).fonts?.load?.('500 18px Inter');
-      } catch {}
+      // timeslice 1s — ít chunk, ít áp lực RAM hơn 200ms
+      recorder.start(1000);
 
       const t0 = performance.now();
       const drawLoop = () => {
+        if (!drawing) return;
+        try {
+          drawFrame(ctx, video, W, H, (performance.now() - t0) / 1000 / total);
+        } catch {}
         const elapsed = (performance.now() - t0) / 1000;
-        const prog = Math.min(1, elapsed / total);
-        // Ken Burns: phóng to + pan dần trong suốt video
-        drawFrame(ctx, video, W, H, prog);
-        setProgress(Math.min(99, Math.round(prog * 100)));
-        if (elapsed < total && recorder.state === "recording") {
+        setProgress(Math.min(99, Math.round((elapsed / total) * 100)));
+        if (elapsed < total && recorder && recorder.state === "recording") {
           rafRef.current = requestAnimationFrame(drawLoop);
         }
       };
       rafRef.current = requestAnimationFrame(drawLoop);
 
-      await new Promise((r) => setTimeout(r, total * 1000));
+      await new Promise((r) => setTimeout(r, total * 1000 + 80));
 
+      drawing = false;
       cancelAnimationFrame(rafRef.current);
       video.pause();
       audio.pause();
-      if (recorder.state === "recording") recorder.stop();
 
-      const blob = await done;
+      if (recorder.state === "recording") {
+        recorder.stop();
+      }
+      const blob = await stopped;
+
+      // Dọn track
+      try {
+        combined.getTracks().forEach((t) => t.stop());
+        canvasStream.getTracks().forEach((t) => t.stop());
+      } catch {}
+
+      if (blob.size < 1000) {
+        throw new Error("File xuất rỗng — thử lại trên Chrome, giảm độ dài nhạc.");
+      }
+
       const url = URL.createObjectURL(blob);
       setOutputUrl(url);
       setProgress(100);
 
       const a = document.createElement("a");
       a.href = url;
-      const ext = mime.includes("mp4") ? "mp4" : "webm";
-      a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p.${ext}`;
+      a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p.webm`;
       a.click();
-      setStatus("✅ Đã xuất & tải file (layout chuẩn logo + chữ)");
+      setStatus("✅ Xuất xong — đã tải file");
     } catch (e: any) {
       console.error(e);
-      setError(e?.message || "Xuất thất bại — dùng Chrome/Edge");
+      drawing = false;
+      cancelAnimationFrame(rafRef.current);
+      try {
+        video.pause();
+        audio.pause();
+      } catch {}
+      try {
+        if (recorder && recorder.state === "recording") recorder.stop();
+      } catch {}
+      setError(
+        e?.message ||
+          "Xuất thất bại / crash. Thử Chrome, nhạc ≤ 90s, tắt tab khác rồi xuất lại."
+      );
       setStatus("Thất bại");
-      video.pause();
-      audio.pause();
     } finally {
       setIsRecording(false);
     }
@@ -591,7 +643,8 @@ export default function Home() {
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
             <h2 className="text-lg font-semibold mb-4">Preview (giống file xuất)</h2>
             {/* Frame tỷ lệ 16:9 — layout giống ảnh mẫu 100% */}
-            <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-[#333] shadow-lg"
+            <div ref={previewBoxRef}
+              className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-[#333] shadow-lg"
               style={{ containerType: "size" }}>
               <video
                 ref={bgVideoRef}
@@ -603,35 +656,49 @@ export default function Home() {
               {/* Gradient đáy */}
               <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/50 to-transparent pointer-events-none" />
 
-              {/* Logo góc trên trái */}
+              {/* Logo — scale theo chiều rộng khung (đồng bộ mọi máy) */}
               <img
                 src="/logo.png"
                 alt="Ontop"
                 className="absolute z-10 object-contain pointer-events-none"
                 style={{
-                  left: "2.8%",
-                  top: "3.2%",
-                  width: "20%",
+                  left: framePx.s * 36,
+                  top: framePx.s * 28,
+                  width: framePx.s * 256,
                   height: "auto",
                 }}
               />
 
-              {/* Chữ góc dưới trái + gạch dọc — tỉ lệ đo từ ảnh mẫu */}
+              {/* Chữ + thanh dọc — px quy đổi từ design 1280 */}
               <div
                 className="absolute z-10 flex items-stretch pointer-events-none"
-                style={{ left: "3.5%", bottom: "7%", maxWidth: "70%" }}
+                style={{
+                  left: framePx.s * 48,
+                  bottom: framePx.s * 54,
+                  maxWidth: framePx.s * 900,
+                }}
               >
                 <div
                   className="bg-white shrink-0"
-                  style={{ width: 2, alignSelf: "stretch", minHeight: "100%" }}
+                  style={{
+                    width: Math.max(2, framePx.s * 2.5),
+                    alignSelf: "stretch",
+                  }}
                 />
-                <div className="flex flex-col justify-center min-w-0 py-[0.4em]" style={{ paddingLeft: "2.4%" }}>
+                <div
+                  className="flex flex-col justify-center min-w-0"
+                  style={{
+                    paddingLeft: framePx.s * 16,
+                    paddingTop: framePx.s * 6,
+                    paddingBottom: framePx.s * 6,
+                  }}
+                >
                   <p
                     className="text-white uppercase leading-none whitespace-nowrap"
                     style={{
                       fontFamily: "var(--font-title), 'Be Vietnam Pro', sans-serif",
                       fontWeight: 300,
-                      fontSize: "2.5cqw",
+                      fontSize: Math.max(10, framePx.s * 30),
                       textShadow: "0 1px 4px rgba(0,0,0,0.6)",
                       letterSpacing: "0.02em",
                     }}
@@ -643,9 +710,9 @@ export default function Home() {
                     style={{
                       fontFamily: "var(--font-artist), Inter, sans-serif",
                       fontWeight: 500,
-                      fontSize: "1.55cqw",
+                      fontSize: Math.max(8, framePx.s * 19),
                       textShadow: "0 1px 3px rgba(0,0,0,0.55)",
-                      marginTop: "0.55em",
+                      marginTop: framePx.s * 10,
                       letterSpacing: "0.08em",
                     }}
                   >
@@ -653,7 +720,6 @@ export default function Home() {
                   </p>
                 </div>
               </div>
-            </div>
             <audio ref={audioRef} className="hidden" crossOrigin="anonymous" />
             <canvas ref={canvasRef} className="hidden" />
             <p className="text-xs text-gray-500 mt-3 text-center">
