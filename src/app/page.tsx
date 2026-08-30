@@ -197,9 +197,9 @@ export default function Home() {
     // Logo top-left — to hơn (~14.5% width)
     const logo = logoImgRef.current;
     if (logo && logo.complete && logo.naturalWidth > 0) {
-      const logoW = Math.round(w * 0.145);
+      const logoW = Math.round(w * 0.15);
       const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
-      const lx = Math.round(w * 0.032);
+      const lx = Math.round(w * 0.028);
       const ly = Math.round(h * 0.035);
       ctx.drawImage(logo, lx, ly, logoW, logoH);
     }
@@ -208,11 +208,11 @@ export default function Home() {
     const title = (songTitle || "").toUpperCase().slice(0, 90);
     const sub = (artist || "").toUpperCase().slice(0, 60);
 
-    const leftPad = Math.round(w * 0.042);
+    const leftPad = Math.round(w * 0.035);
     const barW = Math.max(3, Math.round(w * 0.0035));
-    // ~1.9% và ~1.25% chiều rộng khung — nhỏ hơn trước
-    const titleSize = Math.round(w * 0.019);
-    const subSize = Math.round(w * 0.0125);
+    // Tỉ lệ đo từ ảnh mẫu (~3.2% / ~2.0% chiều rộng khung)
+    const titleSize = Math.round(w * 0.032);
+    const subSize = Math.round(w * 0.02);
     const textX = leftPad + barW + Math.round(w * 0.012);
     const baseY = h - Math.round(h * 0.085);
 
@@ -605,9 +605,9 @@ export default function Home() {
                 alt="Ontop"
                 className="absolute z-10 object-contain pointer-events-none"
                 style={{
-                  left: "3.2%",
+                  left: "2.8%",
                   top: "3.5%",
-                  width: "14.5%",
+                  width: "15%",
                   height: "auto",
                 }}
               />
@@ -615,19 +615,20 @@ export default function Home() {
               {/* Chữ góc dưới trái + gạch dọc */}
               <div
                 className="absolute z-10 flex items-stretch pointer-events-none"
-                style={{ left: "4.5%", bottom: "8%", right: "8%" }}
+                style={{ left: "3.5%", bottom: "8%", maxWidth: "88%" }}
               >
                 <div
-                  className="bg-white shrink-0 self-stretch"
-                  style={{ width: 3, minHeight: "100%" }}
+                  className="bg-white shrink-0 self-stretch rounded-[1px]"
+                  style={{ width: 4, minHeight: 52 }}
                 />
                 <div className="pl-3 flex flex-col justify-end min-w-0">
                   <p
                     className="text-white font-bold uppercase leading-tight truncate tracking-wide"
                     style={{
                       fontFamily: "var(--font-montserrat), Montserrat, sans-serif",
-                      fontSize: "clamp(10px, 1.7vw, 14px)",
-                      textShadow: "0 1px 6px rgba(0,0,0,0.5)",
+                      fontSize: "clamp(14px, 2.8vw, 22px)",
+                      textShadow: "0 2px 10px rgba(0,0,0,0.65)",
+                      letterSpacing: "0.02em",
                     }}
                   >
                     {songTitle}
@@ -636,8 +637,9 @@ export default function Home() {
                     className="text-white/90 font-semibold uppercase leading-tight mt-0.5 truncate tracking-wide"
                     style={{
                       fontFamily: "var(--font-montserrat), Montserrat, sans-serif",
-                      fontSize: "clamp(8px, 1.15vw, 11px)",
-                      textShadow: "0 1px 5px rgba(0,0,0,0.45)",
+                      fontSize: "clamp(11px, 1.8vw, 15px)",
+                      textShadow: "0 2px 8px rgba(0,0,0,0.55)",
+                      letterSpacing: "0.04em",
                     }}
                   >
                     {artist}
