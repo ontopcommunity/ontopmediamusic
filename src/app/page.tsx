@@ -179,7 +179,7 @@ export default function Home() {
     video: HTMLVideoElement,
     w: number,
     h: number,
-    progress = 0
+    _progress = 0
   ) => {
     const vw = video.videoWidth || w;
     const vh = video.videoHeight || h;
@@ -302,7 +302,7 @@ export default function Home() {
     const H = 720;
     canvas.width = W;
     canvas.height = H;
-    const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true })!;
+    const ctx = canvas.getContext("2d", { alpha: false })!;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
 
@@ -554,7 +554,11 @@ export default function Home() {
             outName,
           ]);
           const data = await ffmpeg.readFile(outName);
-          blob = new Blob([data], { type: "video/mp4" });
+          const bytes =
+            data instanceof Uint8Array
+              ? data
+              : new Uint8Array(data as ArrayBuffer);
+          blob = new Blob([bytes], { type: "video/mp4" });
           try {
             await ffmpeg.deleteFile(inName);
             await ffmpeg.deleteFile(outName);
