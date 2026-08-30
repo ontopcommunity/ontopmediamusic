@@ -720,6 +720,7 @@ export default function Home() {
                   </p>
                 </div>
               </div>
+            </div>
             <audio ref={audioRef} className="hidden" crossOrigin="anonymous" />
             <canvas ref={canvasRef} className="hidden" />
             <p className="text-xs text-gray-500 mt-3 text-center">
