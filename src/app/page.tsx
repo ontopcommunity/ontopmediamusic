@@ -623,7 +623,7 @@ export default function Home() {
                 />
                 <div className="pl-3 flex flex-col justify-end min-w-0">
                   <p
-                    className="text-white font-bold uppercase leading-tight truncate tracking-wide"
+                    className="text-white font-bold uppercase leading-tight tracking-wide"
                     style={{
                       fontFamily: "var(--font-montserrat), Montserrat, sans-serif",
                       fontSize: "clamp(14px, 2.8vw, 22px)",
@@ -634,7 +634,7 @@ export default function Home() {
                     {songTitle}
                   </p>
                   <p
-                    className="text-white/90 font-semibold uppercase leading-tight mt-0.5 truncate tracking-wide"
+                    className="text-white/90 font-semibold uppercase leading-tight mt-0.5 tracking-wide"
                     style={{
                       fontFamily: "var(--font-montserrat), Montserrat, sans-serif",
                       fontSize: "clamp(11px, 1.8vw, 15px)",
