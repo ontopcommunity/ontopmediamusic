@@ -1,11 +1,20 @@
 import type { Metadata } from "next";
-import { Montserrat } from "next/font/google";
+import { Be_Vietnam_Pro, Inter } from "next/font/google";
 import "./globals.css";
 
-const montserrat = Montserrat({
+// Tên bài: mỏng, hỗ trợ tiếng Việt
+const beVietnam = Be_Vietnam_Pro({
   subsets: ["latin", "vietnamese"],
-  weight: ["500", "600", "700", "800"],
-  variable: "--font-montserrat",
+  weight: ["300", "400", "500"],
+  variable: "--font-title",
+  display: "swap",
+});
+
+// Tác giả / label: khác style, vẫn Việt hoá
+const inter = Inter({
+  subsets: ["latin", "vietnamese"],
+  weight: ["400", "500", "600"],
+  variable: "--font-artist",
   display: "swap",
 });
 
@@ -20,8 +29,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="vi" className={`${montserrat.variable} h-full antialiased`}>
-      <body className={`${montserrat.className} min-h-full flex flex-col bg-[#0a0a0a] text-white`}>
+    <html
+      lang="vi"
+      className={`${beVietnam.variable} ${inter.variable} h-full antialiased`}
+    >
+      <body className={`${inter.className} min-h-full flex flex-col bg-[#0a0a0a] text-white`}>
         {children}
       </body>
     </html>

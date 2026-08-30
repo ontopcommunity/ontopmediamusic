@@ -197,7 +197,7 @@ export default function Home() {
     // Logo top-left — to hơn (~14.5% width)
     const logo = logoImgRef.current;
     if (logo && logo.complete && logo.naturalWidth > 0) {
-      const logoW = Math.round(w * 0.09);
+      const logoW = Math.round(w * 0.13);
       const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
       const lx = Math.round(w * 0.032);
       const ly = Math.round(h * 0.04);
@@ -209,28 +209,32 @@ export default function Home() {
     const sub = (artist || "").toUpperCase().slice(0, 60);
 
     const leftPad = Math.round(w * 0.0376);
-    const barW = Math.max(3, Math.round(w * 0.0035));
-    // Tỉ lệ đo từ ảnh mẫu (~3.2% / ~2.0% chiều rộng khung)
+    // Thanh dọc mỏng hơn
+    const barW = Math.max(2, Math.round(w * 0.0018));
     const titleSize = Math.round(w * 0.0225);
     const subSize = Math.round(w * 0.014);
     const textX = leftPad + barW + Math.round(w * 0.012);
     const baseY = h - Math.round(h * 0.078);
 
-    const fontTitle = `700 ${titleSize}px Montserrat, "Segoe UI", sans-serif`;
-    const fontSub = `600 ${subSize}px Montserrat, "Segoe UI", sans-serif`;
+    // Tên: Be Vietnam Pro Light (mỏng) · Tác giả: Inter Medium — có tiếng Việt
+    const fontTitle = `300 ${titleSize}px "Be Vietnam Pro", "Segoe UI", sans-serif`;
+    const fontSub = `500 ${subSize}px Inter, "Segoe UI", sans-serif`;
 
     ctx.textAlign = "left";
     ctx.textBaseline = "bottom";
     ctx.font = fontTitle;
-    const titleH = titleSize * 1.1;
+    const titleH = titleSize * 1.05;
     ctx.font = fontSub;
-    const subH = subSize * 1.15;
-    const gap = Math.round(h * 0.008);
+    const subH = subSize * 1.1;
+    const gap = Math.round(h * 0.01);
     const blockH = titleH + gap + subH;
-    const barTop = baseY - blockH;
+    // Căn thanh với khối chữ, nhích xuống một chút cho khớp mắt
+    const barNudge = Math.round(h * 0.008);
+    const barTop = baseY - blockH + barNudge;
+    const barBottom = baseY + Math.round(h * 0.004);
 
     ctx.fillStyle = "#ffffff";
-    ctx.fillRect(leftPad, barTop, barW, baseY - barTop);
+    ctx.fillRect(leftPad, barTop, barW, Math.max(2, barBottom - barTop));
 
     ctx.font = fontTitle;
     ctx.fillStyle = "#ffffff";
@@ -240,7 +244,7 @@ export default function Home() {
     ctx.fillText(title, textX, baseY - subH - gap);
 
     ctx.font = fontSub;
-    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
     ctx.fillText(sub, textX, baseY);
 
     ctx.shadowColor = "transparent";
@@ -360,8 +364,8 @@ export default function Home() {
 
       // Đợi font Montserrat sẵn sàng trước khi vẽ chữ
       try {
-        await (document as any).fonts?.load?.('700 24px Montserrat');
-        await (document as any).fonts?.load?.('600 16px Montserrat');
+        await (document as any).fonts?.load?.('300 28px "Be Vietnam Pro"');
+        await (document as any).fonts?.load?.('500 18px Inter');
       } catch {}
 
       const t0 = performance.now();
@@ -606,9 +610,9 @@ export default function Home() {
                 alt="Ontop"
                 className="absolute z-10 object-contain pointer-events-none"
                 style={{
-                  left: "3.2%",
-                  top: "4%",
-                  width: "9%",
+                  left: "3%",
+                  top: "3.5%",
+                  width: "13%",
                   height: "auto",
                 }}
               />
@@ -616,32 +620,34 @@ export default function Home() {
               {/* Chữ góc dưới trái + gạch dọc — tỉ lệ đo từ ảnh mẫu */}
               <div
                 className="absolute z-10 flex items-stretch pointer-events-none"
-                style={{ left: "3.76%", bottom: "7.8%", maxWidth: "62%" }}
+                style={{ left: "3.76%", bottom: "7%", maxWidth: "62%" }}
               >
                 <div
                   className="bg-white shrink-0 self-stretch"
-                  style={{ width: 3 }}
+                  style={{ width: 2, marginTop: "0.35em" }}
                 />
                 <div className="flex flex-col justify-center min-w-0" style={{ paddingLeft: "2.2%" }}>
                   <p
-                    className="text-white font-bold uppercase leading-none whitespace-nowrap"
+                    className="text-white uppercase leading-none whitespace-nowrap"
                     style={{
-                      fontFamily: "Arial, Helvetica, sans-serif",
+                      fontFamily: "var(--font-title), 'Be Vietnam Pro', sans-serif",
+                      fontWeight: 300,
                       fontSize: "2.25cqw",
                       textShadow: "0 1px 4px rgba(0,0,0,0.6)",
-                      letterSpacing: "0.01em",
+                      letterSpacing: "0.02em",
                     }}
                   >
                     {songTitle}
                   </p>
                   <p
-                    className="text-white/90 font-semibold uppercase leading-none whitespace-nowrap"
+                    className="text-white/90 uppercase leading-none whitespace-nowrap"
                     style={{
-                      fontFamily: "Arial, Helvetica, sans-serif",
+                      fontFamily: "var(--font-artist), Inter, sans-serif",
+                      fontWeight: 500,
                       fontSize: "1.4cqw",
                       textShadow: "0 1px 3px rgba(0,0,0,0.55)",
-                      marginTop: "0.45em",
-                      letterSpacing: "0.06em",
+                      marginTop: "0.5em",
+                      letterSpacing: "0.08em",
                     }}
                   >
                     {artist}
