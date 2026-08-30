@@ -197,10 +197,10 @@ export default function Home() {
     // Logo top-left — to hơn (~14.5% width)
     const logo = logoImgRef.current;
     if (logo && logo.complete && logo.naturalWidth > 0) {
-      const logoW = Math.round(w * 0.15);
+      const logoW = Math.round(w * 0.09);
       const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
-      const lx = Math.round(w * 0.028);
-      const ly = Math.round(h * 0.035);
+      const lx = Math.round(w * 0.032);
+      const ly = Math.round(h * 0.04);
       ctx.drawImage(logo, lx, ly, logoW, logoH);
     }
 
@@ -208,13 +208,13 @@ export default function Home() {
     const title = (songTitle || "").toUpperCase().slice(0, 90);
     const sub = (artist || "").toUpperCase().slice(0, 60);
 
-    const leftPad = Math.round(w * 0.035);
+    const leftPad = Math.round(w * 0.0376);
     const barW = Math.max(3, Math.round(w * 0.0035));
     // Tỉ lệ đo từ ảnh mẫu (~3.2% / ~2.0% chiều rộng khung)
-    const titleSize = Math.round(w * 0.032);
-    const subSize = Math.round(w * 0.02);
+    const titleSize = Math.round(w * 0.0225);
+    const subSize = Math.round(w * 0.014);
     const textX = leftPad + barW + Math.round(w * 0.012);
-    const baseY = h - Math.round(h * 0.085);
+    const baseY = h - Math.round(h * 0.078);
 
     const fontTitle = `700 ${titleSize}px Montserrat, "Segoe UI", sans-serif`;
     const fontSub = `600 ${subSize}px Montserrat, "Segoe UI", sans-serif`;
@@ -588,7 +588,8 @@ export default function Home() {
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
             <h2 className="text-lg font-semibold mb-4">Preview (giống file xuất)</h2>
             {/* Frame tỷ lệ 16:9 — layout giống ảnh mẫu 100% */}
-            <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-[#333] shadow-lg">
+            <div className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-[#333] shadow-lg"
+              style={{ containerType: "size" }}>
               <video
                 ref={bgVideoRef}
                 className="absolute inset-0 w-full h-full object-cover"
@@ -605,41 +606,42 @@ export default function Home() {
                 alt="Ontop"
                 className="absolute z-10 object-contain pointer-events-none"
                 style={{
-                  left: "2.8%",
-                  top: "3.5%",
-                  width: "15%",
+                  left: "3.2%",
+                  top: "4%",
+                  width: "9%",
                   height: "auto",
                 }}
               />
 
-              {/* Chữ góc dưới trái + gạch dọc */}
+              {/* Chữ góc dưới trái + gạch dọc — tỉ lệ đo từ ảnh mẫu */}
               <div
                 className="absolute z-10 flex items-stretch pointer-events-none"
-                style={{ left: "3.5%", bottom: "8%", maxWidth: "88%" }}
+                style={{ left: "3.76%", bottom: "7.8%", maxWidth: "62%" }}
               >
                 <div
-                  className="bg-white shrink-0 self-stretch rounded-[1px]"
-                  style={{ width: 4, minHeight: 52 }}
+                  className="bg-white shrink-0 self-stretch"
+                  style={{ width: 3 }}
                 />
-                <div className="pl-3 flex flex-col justify-end min-w-0">
+                <div className="flex flex-col justify-center min-w-0" style={{ paddingLeft: "2.2%" }}>
                   <p
-                    className="text-white font-bold uppercase leading-tight tracking-wide"
+                    className="text-white font-bold uppercase leading-none whitespace-nowrap"
                     style={{
-                      fontFamily: "var(--font-montserrat), Montserrat, sans-serif",
-                      fontSize: "clamp(14px, 2.8vw, 22px)",
-                      textShadow: "0 2px 10px rgba(0,0,0,0.65)",
-                      letterSpacing: "0.02em",
+                      fontFamily: "Arial, Helvetica, sans-serif",
+                      fontSize: "2.25cqw",
+                      textShadow: "0 1px 4px rgba(0,0,0,0.6)",
+                      letterSpacing: "0.01em",
                     }}
                   >
                     {songTitle}
                   </p>
                   <p
-                    className="text-white/90 font-semibold uppercase leading-tight mt-0.5 tracking-wide"
+                    className="text-white/90 font-semibold uppercase leading-none whitespace-nowrap"
                     style={{
-                      fontFamily: "var(--font-montserrat), Montserrat, sans-serif",
-                      fontSize: "clamp(11px, 1.8vw, 15px)",
-                      textShadow: "0 2px 8px rgba(0,0,0,0.55)",
-                      letterSpacing: "0.04em",
+                      fontFamily: "Arial, Helvetica, sans-serif",
+                      fontSize: "1.4cqw",
+                      textShadow: "0 1px 3px rgba(0,0,0,0.55)",
+                      marginTop: "0.45em",
+                      letterSpacing: "0.06em",
                     }}
                   >
                     {artist}
