@@ -293,7 +293,7 @@ export default function Home() {
     setError(null);
     setOutputUrl(null);
     setProgress(0);
-    setStatus("Tối ưu tàn bạo (máy yếu / bài dài): xuất từng đoạn...");
+    setStatus("Xuất từng đoạn → tự ghép 1 file...");
 
     const video = bgVideoRef.current;
     const audio = audioRef.current;
@@ -304,34 +304,80 @@ export default function Home() {
     canvas.height = H;
     const ctx = canvas.getContext("2d", { alpha: false })!;
     ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "low"; // nhẹ CPU, nhìn 720p vẫn ổn
+    ctx.imageSmoothingQuality = "low";
 
     const total = Math.max(
       3,
       duration || (isFinite(audio.duration) ? audio.duration : 30)
     );
 
-    // --- Detect máy yếu (Android/iPhone hoặc RAM thấp) ---
     const ua = navigator.userAgent || "";
     const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
-    const devMem = (navigator as any).deviceMemory as number | undefined; // GB
+    const devMem = (navigator as any).deviceMemory as number | undefined;
     const lowEnd = isMobile || (typeof devMem === "number" && devMem <= 4);
 
-    // Máy yếu: 50fps, bitrate thấp hơn, đoạn 18s; máy khỏe: 60fps, đoạn dài hơn
     const targetFps = lowEnd ? 50 : 60;
     const frameInterval = 1000 / targetFps;
-    const vBitrate = lowEnd ? 2_800_000 : 5_000_000;
+    const vBitrate = lowEnd ? 2_500_000 : 5_000_000;
     const aBitrate = lowEnd ? 128_000 : 160_000;
-    const segmentSec = lowEnd ? 18 : 45;
+    // Đoạn ngắn hơn trên máy yếu để không OOM khi ghi
+    const segmentSec = lowEnd ? 15 : 40;
 
-    // Pre-render logo + chữ 1 lần → mỗi frame chỉ draw video + overlay (rất nhẹ)
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    // --- IndexedDB: giữ từng đoạn ngoài RAM JS ---
+    const DB_NAME = "ontop-export-segs";
+    const STORE = "segs";
+    const openDb = (): Promise<IDBDatabase> =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    const idbSet = async (key: string, val: Blob) => {
+      const db = await openDb();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).put(val, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      db.close();
+    };
+    const idbGet = async (key: string): Promise<Blob | null> => {
+      const db = await openDb();
+      const out = await new Promise<Blob | null>((resolve, reject) => {
+        const tx = db.transaction(STORE, "readonly");
+        const r = tx.objectStore(STORE).get(key);
+        r.onsuccess = () => resolve((r.result as Blob) || null);
+        r.onerror = () => reject(r.error);
+      });
+      db.close();
+      return out;
+    };
+    const idbClear = async () => {
+      try {
+        const db = await openDb();
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(STORE, "readwrite");
+          tx.objectStore(STORE).clear();
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+        db.close();
+      } catch {}
+    };
+    await idbClear();
+
+    // Overlay cache
     const overlay = document.createElement("canvas");
     overlay.width = W;
     overlay.height = H;
     const octx = overlay.getContext("2d")!;
-    octx.clearRect(0, 0, W, H);
-    // Dùng drawFrame lên canvas tạm với video đen để lấy overlay? 
-    // Tự vẽ logo+text giống drawFrame
     const paintOverlay = () => {
       octx.clearRect(0, 0, W, H);
       const grad = octx.createLinearGradient(0, H * 0.62, 0, H);
@@ -339,14 +385,12 @@ export default function Home() {
       grad.addColorStop(1, "rgba(0,0,0,0.42)");
       octx.fillStyle = grad;
       octx.fillRect(0, H * 0.62, W, H * 0.38);
-
       const logo = logoImgRef.current;
       if (logo && logo.complete && logo.naturalWidth > 0) {
         const logoW = Math.round(W * 0.2);
         const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
         octx.drawImage(logo, Math.round(W * 0.032), Math.round(H * 0.04), logoW, logoH);
       }
-
       const title = (songTitle || "").toUpperCase().slice(0, 90);
       const sub = (artist || "").toUpperCase().slice(0, 60);
       const leftPad = Math.round(W * 0.0376);
@@ -355,6 +399,7 @@ export default function Home() {
       const subSize = Math.round(W * 0.015);
       const textX = leftPad + barW + Math.round(W * 0.014);
       const baseY = H - Math.round(H * 0.075);
+      octx.fillStyle = "#fff";
       const fontTitle = `300 ${titleSize}px "Be Vietnam Pro", sans-serif`;
       const fontSub = `500 ${subSize}px Inter, sans-serif`;
       octx.font = fontTitle;
@@ -364,14 +409,10 @@ export default function Home() {
       const gap = Math.round(H * 0.012);
       const blockH = titleH + gap + subH;
       const extend = Math.round(H * 0.012);
-      const barTop = baseY - blockH - extend;
-      const barBottom = baseY + extend;
-      octx.fillStyle = "#ffffff";
-      octx.fillRect(leftPad, barTop, barW, barBottom - barTop);
+      octx.fillRect(leftPad, baseY - blockH - extend, barW, blockH + extend * 2);
       octx.font = fontTitle;
-      octx.fillStyle = "#ffffff";
-      octx.shadowColor = "rgba(0,0,0,0.5)";
-      octx.shadowBlur = 4;
+      octx.shadowColor = "rgba(0,0,0,0.45)";
+      octx.shadowBlur = 3;
       octx.textAlign = "left";
       octx.textBaseline = "bottom";
       octx.fillText(title, textX, baseY - subH - gap);
@@ -402,49 +443,36 @@ export default function Home() {
       const base = Math.max(W / vw, H / vh);
       const dw = vw * base;
       const dh = vh * base;
-      const dx = (W - dw) / 2;
-      const dy = (H - dh) / 2;
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, W, H);
       try {
-        ctx.drawImage(video, dx, dy, dw, dh);
+        ctx.drawImage(video, (W - dw) / 2, (H - dh) / 2, dw, dh);
       } catch {}
       ctx.drawImage(overlay, 0, 0);
     };
 
-    const pickMime = () => {
-      const list = [
+    const mime =
+      [
         "video/webm;codecs=vp8,opus",
         "video/webm;codecs=vp8",
         "video/webm",
-        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
         "video/mp4",
-      ];
-      return (
-        list.find((m) => {
-          try {
-            return MediaRecorder.isTypeSupported(m);
-          } catch {
-            return false;
-          }
-        }) || "video/webm"
-      );
-    };
-    const mime = pickMime();
-    const ext = mime.includes("mp4") ? "mp4" : "webm";
+      ].find((m) => {
+        try {
+          return MediaRecorder.isTypeSupported(m);
+        } catch {
+          return false;
+        }
+      }) || "video/webm";
+    const isMp4 = mime.includes("mp4");
+    const ext = isMp4 ? "mp4" : "webm";
 
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-    // Lấy audio track nhẹ
     const getAudioTrack = (): MediaStreamTrack | null => {
       try {
         const cap =
           (audio as any).captureStream?.bind(audio) ||
           (audio as any).mozCaptureStream?.bind(audio);
-        if (cap) {
-          const s: MediaStream = cap();
-          return s.getAudioTracks()[0] || null;
-        }
+        if (cap) return cap().getAudioTracks()[0] || null;
       } catch {}
       try {
         if (!audioGraphRef.current) {
@@ -470,42 +498,33 @@ export default function Home() {
     video.muted = true;
     video.playsInline = true;
 
-    const parts: string[] = [];
-    let partIndex = 0;
     const numParts = Math.ceil(total / segmentSec);
+    const segKeys: string[] = [];
 
     try {
-      setStatus(
-        lowEnd
-          ? `Máy yếu: xuất ${numParts} đoạn × ~${segmentSec}s · 720p${targetFps}`
-          : `Xuất ${numParts} đoạn · 720p${targetFps}`
-      );
-
-      for (let segStart = 0; segStart < total; segStart += segmentSec) {
+      // ===== PHASE 1: ghi từng đoạn → IndexedDB =====
+      for (let i = 0; i < numParts; i++) {
+        const segStart = i * segmentSec;
         const segLen = Math.min(segmentSec, total - segStart);
-        partIndex += 1;
-        setStatus(`Đoạn ${partIndex}/${numParts} (${segLen.toFixed(0)}s)...`);
-        setProgress(Math.round((segStart / total) * 100));
+        setStatus(`Ghi đoạn ${i + 1}/${numParts} (${segLen.toFixed(0)}s)...`);
+        setProgress(Math.round((i / numParts) * 70));
 
-        // Seek audio
         audio.pause();
         video.pause();
-        audio.currentTime = segStart;
-        // video nền loop — không cần seek chính xác
-
-        await sleep(lowEnd ? 400 : 150);
+        try {
+          audio.currentTime = segStart;
+        } catch {}
+        await sleep(lowEnd ? 350 : 120);
 
         const canvasStream = canvas.captureStream(targetFps);
         try {
           canvasStream.getVideoTracks()[0].contentHint = "motion";
         } catch {}
-
         const aTrack = getAudioTrack();
-        const tracks: MediaStreamTrack[] = [
+        const combined = new MediaStream([
           ...canvasStream.getVideoTracks(),
           ...(aTrack ? [aTrack] : []),
-        ];
-        const combined = new MediaStream(tracks);
+        ]);
 
         const chunks: Blob[] = [];
         let rec: MediaRecorder;
@@ -518,64 +537,41 @@ export default function Home() {
         } catch {
           rec = new MediaRecorder(combined, { mimeType: mime });
         }
-
         rec.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) chunks.push(e.data);
+          if (e.data?.size) chunks.push(e.data);
         };
-
         const stopped = new Promise<void>((resolve, reject) => {
           rec.onstop = () => resolve();
-          rec.onerror = () => reject(new Error("MediaRecorder lỗi đoạn " + partIndex));
+          rec.onerror = () => reject(new Error("Lỗi ghi đoạn " + (i + 1)));
         });
 
         drawFast();
         await video.play();
         await audio.play();
-
-        // Nếu audio không đúng vị trí (một số mobile), bỏ qua
-        try {
-          if (Math.abs(audio.currentTime - segStart) > 1) {
-            audio.currentTime = segStart;
-          }
-        } catch {}
-
-        rec.start(lowEnd ? 2000 : 1000);
+        rec.start(2000);
 
         let drawing = true;
         let lastDraw = 0;
-        const t0 = performance.now();
-        const segEndTime = segStart + segLen;
-
+        const segEnd = segStart + segLen;
         const loop = (ts: number) => {
           if (!drawing) return;
           if (ts - lastDraw >= frameInterval) {
             lastDraw = ts;
             drawFast();
           }
-          // dừng khi đủ đoạn
-          const nowA = audio.currentTime || segStart + (ts - t0) / 1000;
-          if (nowA >= segEndTime - 0.05 || audio.ended) {
-            drawing = false;
-            return;
-          }
           rafRef.current = requestAnimationFrame(loop);
         };
         rafRef.current = requestAnimationFrame(loop);
 
-        // Chờ hết đoạn
         await new Promise<void>((resolve) => {
-          const hard = window.setTimeout(
-            () => resolve(),
-            segLen * 1000 + 800
-          );
+          const hard = window.setTimeout(() => resolve(), segLen * 1000 + 700);
           const check = () => {
-            const t = audio.currentTime || 0;
-            if (t >= segEndTime - 0.08 || audio.ended || !drawing) {
+            if ((audio.currentTime || 0) >= segEnd - 0.08 || audio.ended) {
               window.clearTimeout(hard);
               resolve();
               return;
             }
-            window.setTimeout(check, 100);
+            window.setTimeout(check, 120);
           };
           check();
         });
@@ -586,7 +582,6 @@ export default function Home() {
           video.pause();
           audio.pause();
         } catch {}
-
         if (rec.state === "recording") {
           try {
             rec.requestData();
@@ -594,64 +589,116 @@ export default function Home() {
           rec.stop();
         }
         await stopped;
-
-        // Stop tracks ngay
         combined.getTracks().forEach((t) => {
           try {
             t.stop();
           } catch {}
         });
-        canvasStream.getTracks().forEach((t) => {
-          try {
-            t.stop();
-          } catch {}
+
+        const blob = new Blob(chunks, {
+          type: isMp4 ? "video/mp4" : "video/webm",
+        });
+        chunks.length = 0;
+        if (blob.size < 800) throw new Error(`Đoạn ${i + 1} rỗng`);
+
+        const key = `p${i}`;
+        await idbSet(key, blob);
+        segKeys.push(key);
+        await sleep(lowEnd ? 600 : 200);
+      }
+
+      // ===== PHASE 2: ghép 1 file =====
+      setStatus("Đang ghép thành 1 file...");
+      setProgress(75);
+
+      let finalBlob: Blob | null = null;
+
+      // 2a. Thử ffmpeg -c copy (nhanh, không re-encode)
+      try {
+        const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+        const { toBlobURL } = await import("@ffmpeg/util");
+        const ffmpeg = new FFmpeg();
+        const base = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
+        await ffmpeg.load({
+          coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
+          wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
         });
 
-        const blob = new Blob(chunks, { type: mime.includes("mp4") ? "video/mp4" : "video/webm" });
-        chunks.length = 0;
-
-        if (blob.size < 1000) {
-          throw new Error(`Đoạn ${partIndex} rỗng — thử lại.`);
+        const listLines: string[] = [];
+        for (let i = 0; i < segKeys.length; i++) {
+          const b = await idbGet(segKeys[i]);
+          if (!b) throw new Error("Thiếu đoạn " + i);
+          const buf = new Uint8Array(await b.arrayBuffer());
+          const name = `seg${i}.${ext}`;
+          await ffmpeg.writeFile(name, buf);
+          listLines.push(`file '${name}'`);
+          setProgress(75 + Math.round(((i + 1) / segKeys.length) * 10));
         }
-
-        // Tải từng đoạn ngay → giải phóng RAM
-        const url = URL.createObjectURL(blob);
-        parts.push(url);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 30)}_p${partIndex}_720p${targetFps}.${ext}`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-
-        // Thu hồi URL sau 15s
-        setTimeout(() => {
-          try {
-            URL.revokeObjectURL(url);
-          } catch {}
-        }, 15000);
-
-        setProgress(Math.round(((segStart + segLen) / total) * 100));
-
-        // Nghỉ cho máy yếu nhả RAM
-        await sleep(lowEnd ? 900 : 300);
-        if (lowEnd && (window as any).gc) {
-          try {
-            (window as any).gc();
-          } catch {}
+        await ffmpeg.writeFile(
+          "list.txt",
+          new TextEncoder().encode(listLines.join("\n"))
+        );
+        // -c copy: ghép không render lại → nhẹ + giữ chất lượng
+        await ffmpeg.exec([
+          "-f",
+          "concat",
+          "-safe",
+          "0",
+          "-i",
+          "list.txt",
+          "-c",
+          "copy",
+          `out.${ext}`,
+        ]);
+        const data = await ffmpeg.readFile(`out.${ext}`);
+        const u8 =
+          typeof data === "string"
+            ? new TextEncoder().encode(data)
+            : new Uint8Array(data as Uint8Array);
+        const ab = new ArrayBuffer(u8.byteLength);
+        new Uint8Array(ab).set(u8);
+        finalBlob = new Blob([ab], {
+          type: isMp4 ? "video/mp4" : "video/webm",
+        });
+        try {
+          for (let i = 0; i < segKeys.length; i++) {
+            await ffmpeg.deleteFile(`seg${i}.${ext}`);
+          }
+          await ffmpeg.deleteFile("list.txt");
+          await ffmpeg.deleteFile(`out.${ext}`);
+        } catch {}
+      } catch (mergeErr) {
+        console.warn("ffmpeg concat failed, blob join fallback", mergeErr);
+        // 2b. Fallback: nối Blob tuần tự (webm cùng codec thường chơi được)
+        const parts: Blob[] = [];
+        for (const k of segKeys) {
+          const b = await idbGet(k);
+          if (b) parts.push(b);
         }
+        finalBlob = new Blob(parts, {
+          type: isMp4 ? "video/mp4" : "video/webm",
+        });
+      }
+
+      await idbClear();
+
+      if (!finalBlob || finalBlob.size < 2000) {
+        throw new Error("Ghép file thất bại / file rỗng");
       }
 
       setProgress(100);
-      setOutputUrl(parts[0] || null);
+      const url = URL.createObjectURL(finalBlob);
+      setOutputUrl(url);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p${targetFps}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
       setStatus(
-        `✅ Xong ${partIndex} đoạn · 720p${targetFps} · tổng ~${total.toFixed(0)}s. Ghép các file _p1 _p2… bằng CapCut/VN nếu cần 1 file.`
+        `✅ 1 file · 720p${targetFps} · ~${total.toFixed(0)}s · ${(finalBlob.size / 1024 / 1024).toFixed(1)}MB`
       );
-      if (partIndex > 1) {
-        setError(
-          `Máy yếu/bài dài → đã tách ${partIndex} file để không crash. Mỗi file ~${segmentSec}s, đủ 720p${targetFps}.`
-        );
-      }
+      setError(null);
     } catch (e: any) {
       console.error(e);
       cancelAnimationFrame(rafRef.current);
@@ -661,7 +708,7 @@ export default function Home() {
       } catch {}
       setError(
         e?.message ||
-          "Vẫn lỗi trên máy yếu. Thử WiFi ổn định, Chrome mới, đóng app khác."
+          "Xuất/ghép lỗi. Dùng Chrome, đóng app khác, thử lại."
       );
       setStatus("Thất bại");
     } finally {
