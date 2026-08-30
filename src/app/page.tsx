@@ -424,26 +424,27 @@ export default function Home() {
           recorder = null;
         }
       }
-      if (!created) {
+      if (!created || !recorder) {
         recorder = new MediaRecorder(combined, { mimeType: mime });
       }
-      recorderRef.current = recorder;
+      const rec = recorder;
+      recorderRef.current = rec;
 
-      recorder.ondataavailable = (e) => {
+      rec.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) {
           chunksRef.current.push(e.data);
         }
       };
 
       const stopped = new Promise<Blob>((resolve, reject) => {
-        recorder!.onstop = () => {
+        rec.onstop = () => {
           resolve(
             new Blob(chunksRef.current, {
               type: isMp4 ? "video/mp4" : "video/webm",
             })
           );
         };
-        recorder!.onerror = () => reject(new Error("MediaRecorder lỗi"));
+        rec.onerror = () => reject(new Error("MediaRecorder lỗi"));
       });
 
       audio.pause();
@@ -457,7 +458,7 @@ export default function Home() {
       await audio.play();
 
       // timeslice 1s — ít object nhỏ, ít GC thrash
-      recorder.start(1000);
+      rec.start(1000);
 
       const t0 = performance.now();
       const paint = () => {
@@ -509,11 +510,11 @@ export default function Home() {
         audio.pause();
       } catch {}
 
-      if (recorder.state === "recording") {
+      if (rec.state === "recording") {
         try {
-          recorder.requestData();
+          rec.requestData();
         } catch {}
-        recorder.stop();
+        rec.stop();
       }
 
       const blob = await stopped;
