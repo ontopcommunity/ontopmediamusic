@@ -2,6 +2,30 @@
 
 import { useState, useEffect } from "react";
 
+const RENDER_API = "https://ontop-video-api.onrender.com";
+
+async function fetchRetry(
+  url: string,
+  init?: RequestInit,
+  tries = 4
+): Promise<Response> {
+  let lastErr: any;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 90000);
+      const res = await fetch(url, { ...init, signal: ctrl.signal });
+      clearTimeout(t);
+      return res;
+    } catch (e) {
+      lastErr = e;
+      // cold start / mạng — chờ rồi thử lại
+      await new Promise((r) => setTimeout(r, 3000 + i * 2000));
+    }
+  }
+  throw lastErr || new Error("Không kết nối được API");
+}
+
 export default function Home() {
   const [songTitle, setSongTitle] = useState("MASHUP HOT TIKTOK - QUINVY REMIX");
   const [artist, setArtist] = useState("OCEAN MUSIC");
@@ -30,6 +54,11 @@ export default function Home() {
     };
   }, [musicUrl, musicFile]);
 
+  // Đánh thức API khi mở trang
+  useEffect(() => {
+    fetchRetry(`${RENDER_API}/health`, { cache: "no-store" }, 2).catch(() => {});
+  }, []);
+
   const createVideo = async () => {
     setError(null);
     setOutputUrl(null);
@@ -38,15 +67,20 @@ export default function Home() {
     setIsWorking(true);
 
     try {
-      setStatus("Đang kết nối API render...");
+      setStatus("Đang đánh thức API (có thể 30–60s lần đầu)...");
       setProgress(5);
-      // same-origin proxy → không bị Failed to fetch / CORS
-      try {
-        await fetch("/api/video/health", { cache: "no-store" });
-      } catch {}
+      const healthRes = await fetchRetry(
+        `${RENDER_API}/health`,
+        { cache: "no-store" },
+        5
+      );
+      const health = await healthRes.json().catch(() => ({}));
+      if (!health.ok) {
+        throw new Error("API chưa sẵn sàng. Đợi 20s rồi thử lại.");
+      }
 
       setStatus("Gửi job render...");
-      setProgress(12);
+      setProgress(15);
 
       let createRes: Response;
       const hasFiles = !!(bgFile || musicFile);
@@ -61,7 +95,8 @@ export default function Home() {
         fd.append("artist", artist);
         fd.append("logo_url", `${window.location.origin}/logo.png`);
         fd.append("duration_sec", String(durationHint));
-        createRes = await fetch("/api/video/render", {
+        // Upload thẳng Render — tránh limit body Vercel 4.5MB
+        createRes = await fetchRetry(`${RENDER_API}/v1/render-form`, {
           method: "POST",
           body: fd,
         });
@@ -69,7 +104,7 @@ export default function Home() {
         if (!videoUrl.trim() || !musicUrl.trim()) {
           throw new Error("Cần video nền + nhạc (link hoặc upload file).");
         }
-        createRes = await fetch("/api/video/render", {
+        createRes = await fetchRetry(`${RENDER_API}/v1/render`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -92,37 +127,49 @@ export default function Home() {
           createData.error ||
             createData.detail ||
             createData.message ||
-            `Tạo job thất bại (${createRes.status})`
+            `Tạo job thất bại (HTTP ${createRes.status})`
         );
       }
 
       const jobId = (createData.job_id || createData.project) as string;
       setProjectId(jobId);
-      setStatus(`Đang render… (${jobId})`);
-      setProgress(20);
+      setStatus(`Đang render… ${jobId}`);
+      setProgress(25);
 
       const started = Date.now();
-      const maxWait = 12 * 60 * 1000;
+      const maxWait = 15 * 60 * 1000;
       while (Date.now() - started < maxWait) {
-        await new Promise((r) => setTimeout(r, 3000));
-        const stRes = await fetch(
-          `/api/video/status?id=${encodeURIComponent(jobId)}`,
-          { cache: "no-store" }
-        );
+        await new Promise((r) => setTimeout(r, 4000));
+        let stRes: Response;
+        try {
+          stRes = await fetchRetry(
+            `${RENDER_API}/v1/status/${encodeURIComponent(jobId)}`,
+            { cache: "no-store" },
+            3
+          );
+        } catch {
+          // fallback proxy
+          stRes = await fetch(
+            `/api/video/status?id=${encodeURIComponent(jobId)}`,
+            { cache: "no-store" }
+          );
+        }
         const stData = await stRes.json().catch(() => ({}));
         if (!stRes.ok) {
-          throw new Error(stData.error || stData.detail || "Lỗi poll status");
+          throw new Error(
+            stData.error || stData.detail || `Status HTTP ${stRes.status}`
+          );
         }
         const movie = stData.movie || stData;
         const st = movie.status as string;
         const pct = typeof movie.progress === "number" ? movie.progress : 0;
-        setProgress(Math.min(95, Math.max(20, pct)));
+        setProgress(Math.min(95, Math.max(25, pct)));
         setStatus(
           `Render: ${st}${movie.message ? " — " + movie.message : ""}`
         );
 
         if (st === "done") {
-          const url = `/api/video/download?id=${encodeURIComponent(jobId)}`;
+          const url = `${RENDER_API}/v1/download/${jobId}`;
           setOutputUrl(url);
           setProgress(100);
           setStatus(
@@ -135,6 +182,7 @@ export default function Home() {
           a.download = `${(songTitle || "video")
             .replace(/\s+/g, "_")
             .slice(0, 40)}_720p50.mp4`;
+          a.target = "_blank";
           document.body.appendChild(a);
           a.click();
           a.remove();
@@ -144,18 +192,18 @@ export default function Home() {
           throw new Error(movie.message || "Render error");
         }
       }
-      throw new Error("Hết thời gian chờ render.");
+      throw new Error("Hết thời gian chờ render (15 phút).");
     } catch (e: any) {
       console.error(e);
-      const msg = e?.message || "Lỗi không rõ";
-      // dịch Failed to fetch thành hướng dẫn rõ
-      if (/failed to fetch|networkerror|load failed/i.test(msg)) {
-        setError(
-          "Mất kết nối mạng tới server. Thử lại: F5 trang, chờ 10s rồi bấm Tạo video (API free có thể đang cold start)."
-        );
-      } else {
-        setError(msg);
+      let msg = e?.message || "Lỗi không rõ";
+      if (e?.name === "AbortError") {
+        msg =
+          "Timeout khi gọi API. API free đang cold start — chờ 1 phút rồi bấm lại.";
+      } else if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+        msg =
+          "Trình duyệt không tới được API Render. Kiểm tra mạng / tắt chặn quảng cáo, chờ 30s rồi thử lại.";
       }
+      setError(msg);
       setStatus("Thất bại");
     } finally {
       setIsWorking(false);
@@ -308,6 +356,8 @@ export default function Home() {
             />
             <a
               href={outputUrl}
+              target="_blank"
+              rel="noreferrer"
               className="block text-center py-3 rounded-xl bg-[#ff0050] font-medium"
             >
               Tải MP4
