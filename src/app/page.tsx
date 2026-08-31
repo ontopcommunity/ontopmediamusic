@@ -2,1112 +2,340 @@
 
 import { useState, useRef, useEffect } from "react";
 
-const proxyUrl = (url: string) => `/api/proxy?url=${encodeURIComponent(url)}`;
-
 export default function Home() {
   const [songTitle, setSongTitle] = useState("MASHUP HOT TIKTOK - QUINVY REMIX");
   const [artist, setArtist] = useState("OCEAN MUSIC");
   const [musicUrl, setMusicUrl] = useState("");
+  const [videoUrl, setVideoUrl] = useState("");
   const [musicFile, setMusicFile] = useState<File | null>(null);
   const [bgFile, setBgFile] = useState<File | null>(null);
-  const [caption, setCaption] = useState("");
-  const [isRecording, setIsRecording] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState("Upload nền + nhạc → Load Preview");
-  const [outputUrl, setOutputUrl] = useState<string | null>(null);
+  const [status, setStatus] = useState("Nhập link hoặc upload → Tạo video");
   const [error, setError] = useState<string | null>(null);
-  const [previewReady, setPreviewReady] = useState(false);
-  const [tiktokCookies, setTiktokCookies] = useState("");
-  const [posting, setPosting] = useState(false);
-  const [postResult, setPostResult] = useState<string | null>(null);
-  const [duration, setDuration] = useState(30);
+  const [isWorking, setIsWorking] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [outputUrl, setOutputUrl] = useState<string | null>(null);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [durationHint, setDurationHint] = useState(30);
 
-  const bgVideoRef = useRef<HTMLVideoElement | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const logoImgRef = useRef<HTMLImageElement | null>(null);
-  const bgObjectUrl = useRef<string | null>(null);
-  const musicObjectUrl = useRef<string | null>(null);
-  const bgInputRef = useRef<HTMLInputElement>(null);
-  const musicInputRef = useRef<HTMLInputElement>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const previewBoxRef = useRef<HTMLDivElement | null>(null);
-  /** scale = previewWidth / 1280 — đồng bộ mọi thiết bị */
-  const [framePx, setFramePx] = useState({ w: 320, s: 320 / 1280 });
-  const chunksRef = useRef<Blob[]>([]);
-  const rafRef = useRef<number>(0);
-  const audioGraphRef = useRef<{
-    ctx: AudioContext;
-    source: MediaElementAudioSourceNode;
-  } | null>(null);
+  const audioProbeRef = useRef<HTMLAudioElement | null>(null);
 
-  // Preload logo
   useEffect(() => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.src = "/logo.png";
-    img.onload = () => {
-      logoImgRef.current = img;
+    // Probe duration from music URL when possible
+    if (!musicUrl.trim() && !musicFile) return;
+    const a = new Audio();
+    audioProbeRef.current = a;
+    const src = musicFile ? URL.createObjectURL(musicFile) : musicUrl.trim();
+    a.src = src;
+    a.onloadedmetadata = () => {
+      if (isFinite(a.duration) && a.duration > 1) {
+        setDurationHint(Math.min(a.duration, 600));
+      }
+      if (musicFile) URL.revokeObjectURL(src);
     };
-    try {
-      const saved = localStorage.getItem("tiktok_cookies");
-      if (saved) setTiktokCookies(saved);
-    } catch {}
-  }, []);
+  }, [musicUrl, musicFile]);
 
-  useEffect(() => {
-    if (songTitle || artist) {
-      const tags = ["#vinahouse", "#remix", "#xuhuong", "#nhactre", "#mashup", "#tiktok"];
-      setCaption(`${songTitle} - ${artist}\n\n${tags.join(" ")}`);
+  /** Upload file lên JSON2Video media qua presigned URL */
+  const uploadToJ2V = async (file: File, folder: string) => {
+    const init = await fetch("/api/json2video/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: file.name.replace(/[^a-zA-Z0-9._-]/g, "_"),
+        contentType: file.type || "application/octet-stream",
+        size: file.size,
+        folder,
+      }),
+    });
+    const initData = await init.json();
+    if (!init.ok || !initData.uploadUrl || !initData.fileUrl) {
+      throw new Error(initData.error || "Không lấy được URL upload");
     }
-  }, [songTitle, artist]);
 
-  useEffect(() => {
-    return () => {
-      if (bgObjectUrl.current) URL.revokeObjectURL(bgObjectUrl.current);
-      if (musicObjectUrl.current) URL.revokeObjectURL(musicObjectUrl.current);
-      cancelAnimationFrame(rafRef.current);
-    };
-  }, []);
+    const put = await fetch(initData.uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": file.type || "application/octet-stream",
+      },
+      body: file,
+    });
+    if (!put.ok) {
+      throw new Error(`Upload file thất bại HTTP ${put.status}`);
+    }
+    return initData.fileUrl as string;
+  };
 
-  // Đồng bộ kích thước overlay theo chiều rộng khung preview (mọi máy giống tỉ lệ 1280)
-  useEffect(() => {
-    const el = previewBoxRef.current;
-    if (!el) return;
-    const apply = () => {
-      const w = el.clientWidth || 320;
-      setFramePx({ w, s: w / 1280 });
-    };
-    apply();
-    const ro = new ResizeObserver(apply);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const loadPreview = async () => {
+  const createVideo = async () => {
     setError(null);
     setOutputUrl(null);
-    setPreviewReady(false);
+    setProjectId(null);
     setProgress(0);
-
-    if (!bgFile) {
-      setError("Vui lòng upload video nền");
-      return;
-    }
-    if (!musicFile && !musicUrl.trim()) {
-      setError("Vui lòng upload file nhạc hoặc dán link nhạc");
-      return;
-    }
+    setIsWorking(true);
 
     try {
-      setStatus("Đang load preview...");
+      let finalVideoUrl = videoUrl.trim();
+      let finalMusicUrl = musicUrl.trim();
 
-      if (bgObjectUrl.current) URL.revokeObjectURL(bgObjectUrl.current);
-      bgObjectUrl.current = URL.createObjectURL(bgFile);
-
-      const video = bgVideoRef.current!;
-      video.src = bgObjectUrl.current;
-      video.muted = true;
-      video.playsInline = true;
-      video.loop = true;
-      try {
-        video.playbackRate = 1;
-      } catch {}
-      await video.play().catch(() => {});
-      video.pause();
-      video.currentTime = 0;
-
-      const audio = audioRef.current!;
-      try {
-        audio.playbackRate = 1;
-      } catch {}
-      if (musicObjectUrl.current) URL.revokeObjectURL(musicObjectUrl.current);
+      if (bgFile) {
+        setStatus("Đang upload video nền lên JSON2Video...");
+        setProgress(8);
+        finalVideoUrl = await uploadToJ2V(bgFile, "temp");
+      }
       if (musicFile) {
-        musicObjectUrl.current = URL.createObjectURL(musicFile);
-        audio.src = musicObjectUrl.current;
-      } else {
-        musicObjectUrl.current = null;
-        audio.src = proxyUrl(musicUrl.trim());
-      }
-      audio.loop = false;
-
-      await new Promise<void>((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error("Load nhạc timeout")), 20000);
-        audio.onloadedmetadata = () => {
-          clearTimeout(t);
-          resolve();
-        };
-        audio.onerror = () => {
-          clearTimeout(t);
-          reject(new Error("Không load được nhạc (thử file mp3)"));
-        };
-        audio.load();
-      });
-
-      let d = audio.duration;
-      if (!isFinite(d) || d < 3) d = 30;
-      setDuration(d); // full theo file nhạc, không cắt
-
-      if (video.duration && isFinite(video.duration) && video.duration > d + 1) {
-        video.currentTime = Math.random() * (video.duration - d);
-      } else {
-        video.currentTime = 0;
+        setStatus("Đang upload nhạc lên JSON2Video...");
+        setProgress(16);
+        finalMusicUrl = await uploadToJ2V(musicFile, "temp");
       }
 
-      setPreviewReady(true);
-      setStatus(`Preview sẵn sàng (~${d.toFixed(0)}s)`);
-    } catch (e: any) {
-      setError(e?.message || "Lỗi load preview");
-      setStatus("Thất bại");
-    }
-  };
-
-  const playPreview = async () => {
-    if (!previewReady) return;
-    try {
-      await bgVideoRef.current!.play();
-      await audioRef.current!.play();
-      setStatus("Đang phát preview...");
-    } catch (e: any) {
-      setError(e?.message || "Không phát được");
-    }
-  };
-
-  /**
-   * Layout mẫu:
-   * - Logo trên-trái (to hơn một chút)
-   * - Chữ dưới-trái nhỏ gọn + gạch dọc (tỉ lệ giống ảnh mẫu)
-   * - progress 0..1: Ken Burns zoom-in + pan, cover crop 1280x720
-   * Font: Montserrat (giống style music video)
-   */
-  const drawFrame = (
-    ctx: CanvasRenderingContext2D,
-    video: HTMLVideoElement,
-    w: number,
-    h: number,
-    _progress = 0
-  ) => {
-    const vw = video.videoWidth || w;
-    const vh = video.videoHeight || h;
-
-    // Cover base scale, rồi phóng to dần (1.0 → 1.18) + pan nhẹ
-    // Không zoom/pan — giữ cover tĩnh để mượt tối đa như video nền
-    const base = Math.max(w / vw, h / vh);
-    const dw = vw * base;
-    const dh = vh * base;
-    const dx = (w - dw) / 2;
-    const dy = (h - dh) / 2;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, w, h);
-    ctx.clip();
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, w, h);
-    ctx.drawImage(video, dx, dy, dw, dh);
-    ctx.restore();
-
-    // Gradient đáy nhẹ
-    const grad = ctx.createLinearGradient(0, h * 0.62, 0, h);
-    grad.addColorStop(0, "rgba(0,0,0,0)");
-    grad.addColorStop(1, "rgba(0,0,0,0.42)");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, h * 0.62, w, h * 0.38);
-
-    // Logo top-left — to hơn (~14.5% width)
-    const logo = logoImgRef.current;
-    if (logo && logo.complete && logo.naturalWidth > 0) {
-      const logoW = Math.round(w * 0.20); // 256@1280 — khớp preview
-      const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
-      const lx = Math.round(w * 0.032);
-      const ly = Math.round(h * 0.04);
-      ctx.drawImage(logo, lx, ly, logoW, logoH);
-    }
-
-    // Text nhỏ gọn bottom-left (tỉ lệ mẫu)
-    const title = (songTitle || "").toUpperCase().slice(0, 90);
-    const sub = (artist || "").toUpperCase().slice(0, 60);
-
-    const leftPad = Math.round(w * 0.0376);
-    // Thanh mỏng nhưng KÉO DÀI đủ 2 dòng chữ
-    const barW = Math.max(2, Math.round(w * 0.002));
-    const titleSize = Math.round(w * 0.024);
-    const subSize = Math.round(w * 0.015);
-    const textX = leftPad + barW + Math.round(w * 0.014);
-    const baseY = h - Math.round(h * 0.075);
-
-    const fontTitle = `300 ${titleSize}px "Be Vietnam Pro", "Segoe UI", sans-serif`;
-    const fontSub = `500 ${subSize}px Inter, "Segoe UI", sans-serif`;
-
-    ctx.textAlign = "left";
-    ctx.textBaseline = "bottom";
-    ctx.font = fontTitle;
-    const titleH = titleSize * 1.15;
-    ctx.font = fontSub;
-    const subH = subSize * 1.2;
-    const gap = Math.round(h * 0.012);
-    const blockH = titleH + gap + subH;
-    // Thanh dài bằng khối chữ, hơi kéo thêm trên/dưới
-    const extend = Math.round(h * 0.012);
-    const barTop = baseY - blockH - extend;
-    const barBottom = baseY + extend;
-
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(leftPad, barTop, barW, barBottom - barTop);
-
-    ctx.font = fontTitle;
-    ctx.fillStyle = "#ffffff";
-    ctx.shadowColor = "rgba(0,0,0,0.5)";
-    ctx.shadowBlur = 6;
-    ctx.shadowOffsetY = 1;
-    ctx.fillText(title, textX, baseY - subH - gap);
-
-    ctx.font = fontSub;
-    ctx.fillStyle = "rgba(255,255,255,0.92)";
-    ctx.fillText(sub, textX, baseY);
-
-    ctx.shadowColor = "transparent";
-    ctx.shadowBlur = 0;
-    ctx.shadowOffsetY = 0;
-  };
-
-  const getAudioStream = async (audio: HTMLAudioElement) => {
-    if (audioGraphRef.current) {
-      return audioGraphRef.current.ctx.createMediaStreamDestination().stream;
-    }
-    const ctx = new AudioContext();
-    const source = ctx.createMediaElementSource(audio);
-    const dest = ctx.createMediaStreamDestination();
-    source.connect(dest);
-    source.connect(ctx.destination);
-    audioGraphRef.current = { ctx, source };
-    // reconnect source to new dest each export
-    return dest.stream;
-  };
-
-  const exportAndDownload = async () => {
-    if (!previewReady || !bgVideoRef.current || !audioRef.current) {
-      setError("Chưa có preview. Bấm Load Preview trước.");
-      return;
-    }
-    if (typeof MediaRecorder === "undefined") {
-      setError("Trình duyệt không hỗ trợ ghi video. Dùng Chrome.");
-      return;
-    }
-
-    setIsRecording(true);
-    setError(null);
-    setOutputUrl(null);
-    setProgress(0);
-    setStatus("Đang xuất 720p50...");
-
-    const video = bgVideoRef.current;
-    const audio = audioRef.current;
-    const canvas = canvasRef.current!;
-    const W = 1280;
-    const H = 720;
-    canvas.width = W;
-    canvas.height = H;
-    const ctx = canvas.getContext("2d", { alpha: false })!;
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "low";
-
-    const total = Math.max(
-      3,
-      duration || (isFinite(audio.duration) ? audio.duration : 30)
-    );
-
-    const ua = navigator.userAgent || "";
-    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
-    const targetFps = 50;
-    const frameInterval = 1000 / targetFps;
-    const vBitrate = isMobile ? 2_000_000 : 4_000_000;
-    const aBitrate = 192_000;
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-    // ---- IDB ----
-    const DB_NAME = "ontop-export-v3";
-    const STORE = "chunks";
-    const openDb = (): Promise<IDBDatabase> =>
-      new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, 1);
-        req.onupgradeneeded = () => {
-          if (!req.result.objectStoreNames.contains(STORE))
-            req.result.createObjectStore(STORE);
-        };
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-    const idbClear = async () => {
-      try {
-        const db = await openDb();
-        await new Promise<void>((res, rej) => {
-          const tx = db.transaction(STORE, "readwrite");
-          tx.objectStore(STORE).clear();
-          tx.oncomplete = () => res();
-          tx.onerror = () => rej(tx.error);
-        });
-        db.close();
-      } catch {}
-    };
-    const idbPut = async (key: number, blob: Blob) => {
-      const db = await openDb();
-      await new Promise<void>((res, rej) => {
-        const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).put(blob, key);
-        tx.oncomplete = () => res();
-        tx.onerror = () => rej(tx.error);
-      });
-      db.close();
-    };
-    const idbGetAll = async (n: number) => {
-      const parts: Blob[] = [];
-      for (let i = 0; i < n; i++) {
-        const db = await openDb();
-        const b = await new Promise<Blob | null>((res, rej) => {
-          const tx = db.transaction(STORE, "readonly");
-          const r = tx.objectStore(STORE).get(i);
-          r.onsuccess = () => res((r.result as Blob) || null);
-          r.onerror = () => rej(r.error);
-        });
-        db.close();
-        if (b) parts.push(b);
-      }
-      return parts;
-    };
-    await idbClear();
-
-    // Logo
-    if (!logoImgRef.current) {
-      await new Promise<void>((resolve) => {
-        const img = new Image();
-        img.src = "/logo.png";
-        img.onload = () => {
-          logoImgRef.current = img;
-          resolve();
-        };
-        img.onerror = () => resolve();
-        setTimeout(() => resolve(), 1000);
-      });
-    }
-
-    // Overlay 1 lần
-    const overlay = document.createElement("canvas");
-    overlay.width = W;
-    overlay.height = H;
-    const octx = overlay.getContext("2d")!;
-    {
-      const grad = octx.createLinearGradient(0, H * 0.62, 0, H);
-      grad.addColorStop(0, "rgba(0,0,0,0)");
-      grad.addColorStop(1, "rgba(0,0,0,0.42)");
-      octx.fillStyle = grad;
-      octx.fillRect(0, H * 0.62, W, H * 0.38);
-      const logo = logoImgRef.current;
-      if (logo && logo.complete && logo.naturalWidth > 0) {
-        const logoW = Math.round(W * 0.2);
-        const logoH = Math.round((logo.naturalHeight / logo.naturalWidth) * logoW);
-        octx.drawImage(logo, Math.round(W * 0.032), Math.round(H * 0.04), logoW, logoH);
-      }
-      const title = (songTitle || "").toUpperCase().slice(0, 90);
-      const sub = (artist || "").toUpperCase().slice(0, 60);
-      const leftPad = Math.round(W * 0.0376);
-      const barW = Math.max(2, Math.round(W * 0.002));
-      const titleSize = Math.round(W * 0.024);
-      const subSize = Math.round(W * 0.015);
-      const textX = leftPad + barW + Math.round(W * 0.014);
-      const baseY = H - Math.round(H * 0.075);
-      octx.fillStyle = "#fff";
-      octx.font = `300 ${titleSize}px "Be Vietnam Pro", sans-serif`;
-      const titleH = titleSize * 1.15;
-      octx.font = `500 ${subSize}px Inter, sans-serif`;
-      const subH = subSize * 1.2;
-      const gap = Math.round(H * 0.012);
-      const blockH = titleH + gap + subH;
-      const extend = Math.round(H * 0.012);
-      octx.fillRect(leftPad, baseY - blockH - extend, barW, blockH + extend * 2);
-      octx.font = `300 ${titleSize}px "Be Vietnam Pro", sans-serif`;
-      octx.shadowColor = "rgba(0,0,0,0.45)";
-      octx.shadowBlur = 3;
-      octx.textAlign = "left";
-      octx.textBaseline = "bottom";
-      octx.fillText(title, textX, baseY - subH - gap);
-      octx.font = `500 ${subSize}px Inter, sans-serif`;
-      octx.fillStyle = "rgba(255,255,255,0.92)";
-      octx.fillText(sub, textX, baseY);
-      octx.shadowBlur = 0;
-    }
-
-    const drawFast = () => {
-      const vw = video.videoWidth || W;
-      const vh = video.videoHeight || H;
-      const base = Math.max(W / vw, H / vh);
-      const dw = vw * base;
-      const dh = vh * base;
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, W, H);
-      try {
-        ctx.drawImage(video, (W - dw) / 2, (H - dh) / 2, dw, dh);
-      } catch {}
-      ctx.drawImage(overlay, 0, 0);
-    };
-
-    const mime =
-      [
-        "video/webm;codecs=vp8,opus",
-        "video/webm;codecs=vp8",
-        "video/webm",
-        "video/mp4",
-      ].find((m) => {
-        try {
-          return MediaRecorder.isTypeSupported(m);
-        } catch {
-          return false;
-        }
-      }) || "video/webm";
-    const isMp4 = mime.includes("mp4");
-    const ext = isMp4 ? "mp4" : "webm";
-
-    let canvasStream: MediaStream | null = null;
-    let audioStream: MediaStream | null = null;
-    let combined: MediaStream | null = null;
-    let recorder: MediaRecorder | null = null;
-    let drawing = true;
-    let chunkIndex = 0;
-    let lastDraw = 0;
-    let lastProg = 0;
-
-    try {
-      // --- Audio track ổn định ---
-      try {
-        video.playbackRate = 1;
-        audio.playbackRate = 1;
-      } catch {}
-      video.loop = true;
-      video.muted = true;
-      video.playsInline = true;
-
-      // Bắt buộc play audio trước khi captureStream (Chrome)
-      audio.currentTime = 0;
-      try {
-        await audio.play();
-      } catch {}
-      await sleep(100);
-
-      const cap =
-        (audio as any).captureStream?.bind(audio) ||
-        (audio as any).mozCaptureStream?.bind(audio);
-
-      if (cap) {
-        audioStream = cap() as MediaStream;
-      } else {
-        // Fallback AudioContext
-        if (!audioGraphRef.current) {
-          const actx = new AudioContext();
-          const source = actx.createMediaElementSource(audio);
-          const dest = actx.createMediaStreamDestination();
-          source.connect(dest);
-          source.connect(actx.destination);
-          audioGraphRef.current = { ctx: actx, source };
-          audioStream = dest.stream;
-        } else {
-          const dest =
-            audioGraphRef.current.ctx.createMediaStreamDestination();
-          try {
-            audioGraphRef.current.source.disconnect();
-          } catch {}
-          audioGraphRef.current.source.connect(dest);
-          audioGraphRef.current.source.connect(
-            audioGraphRef.current.ctx.destination
-          );
-          if (audioGraphRef.current.ctx.state === "suspended") {
-            await audioGraphRef.current.ctx.resume();
-          }
-          audioStream = dest.stream;
-        }
-      }
-
-      const aTracks = audioStream?.getAudioTracks() || [];
-      if (!aTracks.length) {
+      if (!finalVideoUrl || !finalMusicUrl) {
         throw new Error(
-          "Không bắt được track nhạc. Thử upload file mp3 (không dùng link)."
+          "Cần video nền + nhạc (link công khai hoặc upload file)."
         );
       }
 
-      canvasStream = canvas.captureStream(targetFps);
-      try {
-        canvasStream.getVideoTracks()[0].contentHint = "motion";
-      } catch {}
+      setStatus("Gửi job render JSON2Video...");
+      setProgress(25);
 
-      combined = new MediaStream([
-        ...canvasStream.getVideoTracks(),
-        ...aTracks,
-      ]);
-
-      let rec: MediaRecorder;
-      try {
-        rec = new MediaRecorder(combined, {
-          mimeType: mime,
-          videoBitsPerSecond: vBitrate,
-          audioBitsPerSecond: aBitrate,
-        });
-      } catch {
-        try {
-          rec = new MediaRecorder(combined, {
-            mimeType: mime,
-            videoBitsPerSecond: vBitrate,
-          });
-        } catch {
-          rec = new MediaRecorder(combined);
-        }
-      }
-      recorder = rec;
-      recorderRef.current = rec;
-
-      // Giữ chunk trong mảng NHỎ + IDB (double buffer an toàn)
-      const memChunks: Blob[] = [];
-      rec.ondataavailable = (e) => {
-        if (!e.data || !e.data.size) return;
-        memChunks.push(e.data);
-        const key = chunkIndex++;
-        idbPut(key, e.data).catch(() => {});
-      };
-
-      const stopped = new Promise<void>((resolve, reject) => {
-        rec.onstop = () => resolve();
-        rec.onerror = () => reject(new Error("MediaRecorder bị dừng đột ngột"));
+      const createRes = await fetch("/api/json2video/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoUrl: finalVideoUrl,
+          musicUrl: finalMusicUrl,
+          songTitle,
+          artist,
+          durationSec: durationHint,
+        }),
       });
+      const createData = await createRes.json();
+      if (!createRes.ok || !createData.project) {
+        throw new Error(
+          createData.error ||
+            createData.detail?.message ||
+            `Tạo job thất bại (${createRes.status})`
+        );
+      }
 
-      // Reset playhead
-      audio.pause();
-      video.pause();
-      audio.currentTime = 0;
-      try {
-        audio.playbackRate = 1;
-        video.playbackRate = 1;
-      } catch {}
+      const project = createData.project as string;
+      setProjectId(project);
+      setStatus(`Đang render trên JSON2Video… (${project})`);
+      setProgress(35);
 
-      drawFast();
-      await video.play();
-      await audio.play();
-      try {
-        audio.playbackRate = 1;
-        video.playbackRate = 1;
-      } catch {}
-
-      rec.start(1000);
-
-      const t0 = performance.now();
-      const loop = (ts: number) => {
-        if (!drawing) return;
-        if (ts - lastDraw >= frameInterval) {
-          lastDraw = ts;
-          drawFast();
+      // Poll đến khi xong
+      const started = Date.now();
+      const maxWait = 15 * 60 * 1000; // 15 phút
+      while (Date.now() - started < maxWait) {
+        await new Promise((r) => setTimeout(r, 4000));
+        const stRes = await fetch(
+          `/api/json2video/status?project=${encodeURIComponent(project)}`
+        );
+        const stData = await stRes.json();
+        if (!stRes.ok) {
+          throw new Error(stData.error || "Lỗi poll status");
         }
-        if (ts - lastProg > 300) {
-          lastProg = ts;
-          const elapsed = Math.min(
-            total,
-            audio.currentTime || (performance.now() - t0) / 1000
+        const movie = stData.movie || stData;
+        const st = movie.status as string;
+        const pct = typeof movie.progress === "number" ? movie.progress : null;
+        if (pct != null) {
+          setProgress(35 + Math.round((pct / 100) * 60));
+        } else {
+          setProgress((p) => Math.min(90, p + 2));
+        }
+        setStatus(`Render: ${st}${pct != null ? ` ${pct}%` : ""}…`);
+
+        if (st === "done" && movie.url) {
+          setOutputUrl(movie.url);
+          setProgress(100);
+          setStatus(
+            `✅ Xong · ${movie.duration ? Math.round(movie.duration) + "s · " : ""}${(
+              (movie.size || 0) /
+              1024 /
+              1024
+            ).toFixed(1)}MB`
           );
-          setProgress(Math.min(92, Math.round((elapsed / total) * 92)));
-          setStatus(`Đang xuất… ${elapsed.toFixed(0)}s / ${total.toFixed(0)}s`);
+          // auto download
+          const a = document.createElement("a");
+          a.href = movie.url;
+          a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p50.mp4`;
+          a.target = "_blank";
+          a.rel = "noopener";
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          return;
         }
-        rafRef.current = requestAnimationFrame(loop);
-      };
-      rafRef.current = requestAnimationFrame(loop);
-
-      await new Promise<void>((resolve) => {
-        const hard = window.setTimeout(() => resolve(), total * 1000 + 1200);
-        const check = () => {
-          const t = audio.currentTime || (performance.now() - t0) / 1000;
-          if (audio.ended || t >= total - 0.05) {
-            window.clearTimeout(hard);
-            resolve();
-            return;
-          }
-          window.setTimeout(check, 100);
-        };
-        check();
-      });
-
-      drawing = false;
-      cancelAnimationFrame(rafRef.current);
-      try {
-        drawFast();
-      } catch {}
-      try {
-        video.pause();
-        audio.pause();
-      } catch {}
-
-      if (rec.state === "recording") {
-        try {
-          rec.requestData();
-        } catch {}
-        rec.stop();
-      }
-      await stopped;
-      await sleep(300);
-
-      try {
-        combined.getTracks().forEach((t) => {
-          try {
-            t.stop();
-          } catch {}
-        });
-        canvasStream?.getTracks().forEach((t) => {
-          try {
-            t.stop();
-          } catch {}
-        });
-      } catch {}
-
-      setStatus("Đang tạo file...");
-      setProgress(95);
-
-      let finalBlob: Blob;
-      if (memChunks.length) {
-        finalBlob = new Blob(memChunks, {
-          type: isMp4 ? "video/mp4" : "video/webm",
-        });
-        memChunks.length = 0;
-      } else {
-        const parts = await idbGetAll(chunkIndex);
-        if (!parts.length) {
-          throw new Error(
-            "Không có dữ liệu ghi. Thử lại: Load Preview → đợi sẵn sàng → Xuất."
-          );
+        if (st === "error" || st === "timeout") {
+          throw new Error(movie.message || `Render ${st}`);
         }
-        finalBlob = new Blob(parts, {
-          type: isMp4 ? "video/mp4" : "video/webm",
-        });
       }
-      await idbClear();
-
-      if (finalBlob.size < 3000) {
-        throw new Error("File quá nhỏ. Thử upload nhạc dạng file mp3.");
-      }
-
-      // (Tuỳ chọn) Thử nâng audio bằng nhạc gốc — không bắt buộc, lỗi thì bỏ qua
-      try {
-        if (musicFile && finalBlob.size < 80 * 1024 * 1024) {
-          setStatus("Đang gắn nhạc gốc (tuỳ chọn)...");
-          const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-          const { toBlobURL } = await import("@ffmpeg/util");
-          const ffmpeg = new FFmpeg();
-          const base =
-            "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm";
-          await ffmpeg.load({
-            coreURL: await toBlobURL(
-              `${base}/ffmpeg-core.js`,
-              "text/javascript"
-            ),
-            wasmURL: await toBlobURL(
-              `${base}/ffmpeg-core.wasm`,
-              "application/wasm"
-            ),
-          });
-          const vBuf = new Uint8Array(await finalBlob.arrayBuffer());
-          const aBuf = new Uint8Array(await musicFile.arrayBuffer());
-          await ffmpeg.writeFile("v.webm", vBuf);
-          await ffmpeg.writeFile("a.mp3", aBuf);
-          await ffmpeg.exec([
-            "-i",
-            "v.webm",
-            "-i",
-            "a.mp3",
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-ar",
-            "44100",
-            "-b:a",
-            "192k",
-            "-shortest",
-            "-movflags",
-            "+faststart",
-            "out.mp4",
-          ]);
-          const data = await ffmpeg.readFile("out.mp4");
-          const u8 =
-            typeof data === "string"
-              ? new TextEncoder().encode(data)
-              : new Uint8Array(data as Uint8Array);
-          const ab = new ArrayBuffer(u8.byteLength);
-          new Uint8Array(ab).set(u8);
-          const muxed = new Blob([ab], { type: "video/mp4" });
-          if (muxed.size > 5000) {
-            finalBlob = muxed;
-          }
-        }
-      } catch (muxErr) {
-        console.warn("mux optional skip", muxErr);
-        // giữ finalBlob MediaRecorder — vẫn có nhạc
-      }
-
-      const outExt = finalBlob.type.includes("mp4") ? "mp4" : ext;
-      const url = URL.createObjectURL(finalBlob);
-      setOutputUrl(url);
-      setProgress(100);
-
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${(songTitle || "video")
-        .replace(/\s+/g, "_")
-        .slice(0, 40)}_720p50.${outExt}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-
-      setStatus(
-        `✅ Xong · 720p50 · ${total.toFixed(0)}s · ${(
-          finalBlob.size /
-          1024 /
-          1024
-        ).toFixed(1)}MB · ${outExt.toUpperCase()}`
-      );
-      setError(null);
+      throw new Error("Hết thời gian chờ render (15 phút). Thử lại.");
     } catch (e: any) {
-      console.error("EXPORT_ERROR", e);
-      drawing = false;
-      cancelAnimationFrame(rafRef.current);
-      try {
-        video.pause();
-        audio.pause();
-      } catch {}
-      try {
-        if (recorder && recorder.state === "recording") recorder.stop();
-      } catch {}
-      try {
-        combined?.getTracks().forEach((t) => t.stop());
-        canvasStream?.getTracks().forEach((t) => t.stop());
-      } catch {}
-      await idbClear();
-      const msg = e?.message || String(e) || "Lỗi không rõ";
-      setError(`Xuất lỗi: ${msg}`);
+      console.error(e);
+      setError(e?.message || "Lỗi không rõ");
       setStatus("Thất bại");
     } finally {
-      setIsRecording(false);
-    }
-  };
-
-  const postToTikTok = async () => {
-    if (!outputUrl) {
-      setPostResult("Cần xuất video trước");
-      return;
-    }
-    setPosting(true);
-    setPostResult(null);
-    try {
-      try {
-        localStorage.setItem("tiktok_cookies", tiktokCookies);
-      } catch {}
-      const videoBlob = await fetch(outputUrl).then((r) => r.blob());
-      const form = new FormData();
-      form.append("video", videoBlob, "video.webm");
-      form.append("caption", caption);
-      form.append("cookies", tiktokCookies);
-      const res = await fetch("/api/tiktok/post", { method: "POST", body: form });
-      const raw = await res.text();
-      let data: any;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        throw new Error(raw.slice(0, 200) || `HTTP ${res.status}`);
-      }
-      if (!res.ok || data.success === false) throw new Error(data.error || "Đăng thất bại");
-      setPostResult("✅ " + (data.message || "Đã gửi đăng"));
-    } catch (e: any) {
-      setPostResult("❌ " + (e.message || "Lỗi"));
-    } finally {
-      setPosting(false);
+      setIsWorking(false);
     }
   };
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white">
       <header className="border-b border-[#262626] bg-[#111] sticky top-0 z-50">
-        <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="max-w-3xl mx-auto px-4 py-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400">Preview = Export · Layout chuẩn</p>
+            <div className="min-w-0">
+              <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
+              <p className="text-xs text-gray-400 truncate">
+                JSON2Video API · 720p · 50fps · nhạc gốc
+              </p>
             </div>
           </div>
-          <div className="text-sm text-green-400">● Live Preview</div>
+          <div className="text-sm text-cyan-400 shrink-0">Cloud Render</div>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="space-y-6">
-          <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-[#ff0050] text-xs flex items-center justify-center">
-                1
-              </span>
-              Thông tin nhạc
-            </h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">Tên bài hát</label>
-                <input
-                  type="text"
-                  value={songTitle}
-                  onChange={(e) => setSongTitle(e.target.value)}
-                  className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050] transition"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">Tác giả / Label</label>
-                <input
-                  type="text"
-                  value={artist}
-                  onChange={(e) => setArtist(e.target.value)}
-                  className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050] transition"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">
-                  Nhạc: link hoặc upload file
-                </label>
-                <input
-                  type="text"
-                  value={musicUrl}
-                  onChange={(e) => {
-                    setMusicUrl(e.target.value);
-                    setMusicFile(null);
-                    if (musicInputRef.current) musicInputRef.current.value = "";
-                  }}
-                  className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050] transition mb-2"
-                  placeholder="https://...mp3"
-                />
-                <input
-                  ref={musicInputRef}
-                  type="file"
-                  accept="audio/*,.mp3,.m4a,.wav"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) {
-                      setMusicFile(f);
-                      setMusicUrl("");
-                    }
-                  }}
-                  className="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#ff0050] file:text-white file:cursor-pointer"
-                />
-                {musicFile && (
-                  <p className="text-xs text-green-400 mt-2">
-                    ✓ {musicFile.name} ({(musicFile.size / 1024 / 1024).toFixed(2)} MB)
-                  </p>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <span className="w-6 h-6 rounded-full bg-[#ff0050] text-xs flex items-center justify-center">
-                2
-              </span>
-              Video nền (upload)
-            </h2>
+      <main className="max-w-3xl mx-auto px-4 py-8 space-y-6">
+        <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
+          <h2 className="text-lg font-semibold">1. Thông tin nhạc</h2>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Tên bài</label>
             <input
-              ref={bgInputRef}
-              type="file"
-              accept="video/*,.mp4,.webm,.mov"
-              onChange={(e) => setBgFile(e.target.files?.[0] || null)}
-              className="w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#00f2ea] file:text-black file:font-medium file:cursor-pointer"
+              value={songTitle}
+              onChange={(e) => setSongTitle(e.target.value)}
+              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050]"
             />
-            {bgFile && (
-              <p className="text-xs text-green-400 mt-2">
-                ✓ {bgFile.name} ({(bgFile.size / 1024 / 1024).toFixed(2)} MB)
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Tác giả / Label</label>
+            <input
+              value={artist}
+              onChange={(e) => setArtist(e.target.value)}
+              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050]"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">
+              Nhạc — link công khai hoặc upload file
+            </label>
+            <input
+              value={musicUrl}
+              onChange={(e) => {
+                setMusicUrl(e.target.value);
+                setMusicFile(null);
+              }}
+              placeholder="https://...mp3"
+              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 mb-2 focus:outline-none focus:border-[#ff0050]"
+            />
+            <input
+              type="file"
+              accept="audio/*,.mp3,.m4a,.wav"
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                setMusicFile(f);
+                if (f) setMusicUrl("");
+              }}
+              className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#ff0050] file:text-white"
+            />
+            {musicFile && (
+              <p className="text-xs text-green-400 mt-1">
+                ✓ {musicFile.name} ({(musicFile.size / 1024 / 1024).toFixed(2)} MB)
               </p>
             )}
-          </section>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <button
-              onClick={loadPreview}
-              disabled={isRecording}
-              className="py-3 rounded-xl font-semibold bg-[#262626] hover:bg-[#333] disabled:opacity-50"
-            >
-              Load Preview
-            </button>
-            <button
-              onClick={playPreview}
-              disabled={!previewReady || isRecording}
-              className="py-3 rounded-xl font-semibold bg-[#262626] hover:bg-[#333] disabled:opacity-50"
-            >
-              Phát
-            </button>
-            <button
-              onClick={exportAndDownload}
-              disabled={!previewReady || isRecording}
-              className="py-3 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50"
-            >
-              {isRecording ? `${progress}%` : "Xuất & Tải"}
-            </button>
           </div>
+        </section>
 
-          {status && (
-            <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
-              {status}
-            </div>
-          )}
-          {error && (
-            <div className="text-sm text-red-400 bg-red-950/30 border border-red-900 rounded-xl px-4 py-3">
-              {error}
-            </div>
-          )}
-          {isRecording && (
-            <div className="w-full h-2 bg-[#222] rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-[#ff0050] to-[#00f2ea] transition-all"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-6">
-          <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6">
-            <h2 className="text-lg font-semibold mb-4">Preview (giống file xuất)</h2>
-            {/* Frame tỷ lệ 16:9 — layout giống ảnh mẫu 100% */}
-            <div ref={previewBoxRef}
-              className="relative w-full aspect-video bg-black rounded-xl overflow-hidden border border-[#333] shadow-lg"
-              style={{ containerType: "size" }}>
-              <video
-                ref={bgVideoRef}
-                className="absolute inset-0 w-full h-full object-cover"
-                muted
-                playsInline
-                loop
-              />
-              {/* Gradient đáy */}
-              <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/50 to-transparent pointer-events-none" />
-
-              {/* Logo — scale theo chiều rộng khung (đồng bộ mọi máy) */}
-              <img
-                src="/logo.png"
-                alt="Ontop"
-                className="absolute z-10 object-contain pointer-events-none"
-                style={{
-                  left: framePx.s * 36,
-                  top: framePx.s * 28,
-                  width: framePx.s * 256,
-                  height: "auto",
-                }}
-              />
-
-              {/* Chữ + thanh dọc — px quy đổi từ design 1280 */}
-              <div
-                className="absolute z-10 flex items-stretch pointer-events-none"
-                style={{
-                  left: framePx.s * 48,
-                  bottom: framePx.s * 54,
-                  maxWidth: framePx.s * 900,
-                }}
-              >
-                <div
-                  className="bg-white shrink-0"
-                  style={{
-                    width: Math.max(2, framePx.s * 2.5),
-                    alignSelf: "stretch",
-                  }}
-                />
-                <div
-                  className="flex flex-col justify-center min-w-0"
-                  style={{
-                    paddingLeft: framePx.s * 16,
-                    paddingTop: framePx.s * 6,
-                    paddingBottom: framePx.s * 6,
-                  }}
-                >
-                  <p
-                    className="text-white uppercase leading-none whitespace-nowrap"
-                    style={{
-                      fontFamily: "var(--font-title), 'Be Vietnam Pro', sans-serif",
-                      fontWeight: 300,
-                      fontSize: Math.max(10, framePx.s * 30),
-                      textShadow: "0 1px 4px rgba(0,0,0,0.6)",
-                      letterSpacing: "0.02em",
-                    }}
-                  >
-                    {songTitle}
-                  </p>
-                  <p
-                    className="text-white/90 uppercase leading-none whitespace-nowrap"
-                    style={{
-                      fontFamily: "var(--font-artist), Inter, sans-serif",
-                      fontWeight: 500,
-                      fontSize: Math.max(8, framePx.s * 19),
-                      textShadow: "0 1px 3px rgba(0,0,0,0.55)",
-                      marginTop: framePx.s * 10,
-                      letterSpacing: "0.08em",
-                    }}
-                  >
-                    {artist}
-                  </p>
-                </div>
-              </div>
-            </div>
-            <audio ref={audioRef} className="hidden" crossOrigin="anonymous" />
-            <canvas ref={canvasRef} className="hidden" />
-            <p className="text-xs text-gray-500 mt-3 text-center">
-              Logo trên-trái · Chữ dưới-trái + gạch trắng · Preview = khung xuất
+        <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
+          <h2 className="text-lg font-semibold">2. Video nền</h2>
+          <input
+            value={videoUrl}
+            onChange={(e) => {
+              setVideoUrl(e.target.value);
+              setBgFile(null);
+            }}
+            placeholder="https://...mp4 (link công khai)"
+            className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 mb-2 focus:outline-none focus:border-[#00f2ea]"
+          />
+          <input
+            type="file"
+            accept="video/*,.mp4,.webm,.mov"
+            onChange={(e) => {
+              const f = e.target.files?.[0] || null;
+              setBgFile(f);
+              if (f) setVideoUrl("");
+            }}
+            className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#00f2ea] file:text-black file:font-medium"
+          />
+          {bgFile && (
+            <p className="text-xs text-green-400">
+              ✓ {bgFile.name} ({(bgFile.size / 1024 / 1024).toFixed(2)} MB)
             </p>
-          </section>
+          )}
+          <p className="text-xs text-gray-500">
+            Độ dài ước lượng: ~{Math.round(durationHint)}s (theo file nhạc)
+          </p>
+        </section>
 
-          {outputUrl && (
-            <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
-              <h2 className="text-lg font-semibold">File đã xuất</h2>
-              <video src={outputUrl} controls playsInline className="w-full rounded-xl bg-black max-h-64" onLoadedMetadata={(e) => { try { e.currentTarget.playbackRate = 1; } catch {} }} />
-              <a
-                href={outputUrl}
-                download
-                className="block text-center py-3 rounded-xl bg-[#ff0050] font-medium"
-              >
-                Tải lại
-              </a>
-              <div className="border-t border-[#333] pt-4 space-y-2">
-                <label className="block text-sm text-gray-400">Caption TikTok</label>
-                <textarea
-                  value={caption}
-                  onChange={(e) => setCaption(e.target.value)}
-                  rows={3}
-                  className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#ff0050] resize-none"
-                />
-                <label className="block text-sm text-gray-400">Cookie (sessionid)</label>
-                <textarea
-                  value={tiktokCookies}
-                  onChange={(e) => setTiktokCookies(e.target.value)}
-                  rows={2}
-                  className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-[#ff0050] resize-none"
-                />
-                <button
-                  onClick={postToTikTok}
-                  disabled={posting}
-                  className="w-full py-3 rounded-xl bg-[#00f2ea] text-black font-semibold disabled:opacity-50"
-                >
-                  {posting ? "Đang đăng..." : "Đăng TikTok"}
-                </button>
-                {postResult && (
-                  <p className="text-xs text-gray-300 break-words">{postResult}</p>
-                )}
-              </div>
-            </section>
+        <button
+          onClick={createVideo}
+          disabled={isWorking}
+          className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg"
+        >
+          {isWorking ? `Đang xử lý… ${progress}%` : "Tạo video (JSON2Video)"}
+        </button>
+
+        {isWorking && (
+          <div className="w-full h-2 bg-[#222] rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-[#ff0050] to-[#00f2ea] transition-all"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        )}
+
+        <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
+          {status}
+          {projectId && (
+            <div className="text-xs text-gray-600 mt-1">Project: {projectId}</div>
           )}
         </div>
-      </main>
 
-      <footer className="border-t border-[#262626] mt-12 py-6 text-center text-sm text-gray-500">
-        Ontop Media Music • Layout chuẩn mẫu • 1280×720
-      </footer>
+        {error && (
+          <div className="text-sm text-red-400 bg-red-950/30 border border-red-900 rounded-xl px-4 py-3 whitespace-pre-wrap">
+            {error}
+          </div>
+        )}
+
+        {outputUrl && (
+          <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
+            <h2 className="text-lg font-semibold">Video đã render</h2>
+            <video
+              src={outputUrl}
+              controls
+              playsInline
+              className="w-full rounded-xl bg-black max-h-96"
+              onLoadedMetadata={(e) => {
+                try {
+                  e.currentTarget.playbackRate = 1;
+                } catch {}
+              }}
+            />
+            <a
+              href={outputUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block text-center py-3 rounded-xl bg-[#ff0050] font-medium"
+            >
+              Mở / Tải MP4
+            </a>
+          </section>
+        )}
+
+        <p className="text-xs text-gray-600 text-center leading-relaxed">
+          Hệ thống dùng JSON2Video API: video nền muted + loop, nhạc gốc full chất lượng,
+          logo góc trên-trái, chữ góc dưới-trái, xuất 720p · 50fps · MP4.
+          Cần env <code className="text-pink-400">JSON2VIDEO_API_KEY</code> trên Vercel.
+        </p>
+      </main>
     </div>
   );
 }
