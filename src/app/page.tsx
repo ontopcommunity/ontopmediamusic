@@ -40,7 +40,13 @@ export default function Home() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: file.name.replace(/[^a-zA-Z0-9._-]/g, "_"),
+        name: (() => {
+          const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const dot = safe.lastIndexOf(".");
+          const base = dot > 0 ? safe.slice(0, dot) : safe;
+          const ext = dot > 0 ? safe.slice(dot) : "";
+          return `${base}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+        })(),
         contentType: file.type || "application/octet-stream",
         size: file.size,
         folder,

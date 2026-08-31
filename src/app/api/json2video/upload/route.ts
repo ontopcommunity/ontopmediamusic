@@ -28,6 +28,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Luôn đổi tên unique để không bị "file already exists"
+    const safe = String(name).replace(/[^a-zA-Z0-9._-]/g, "_");
+    const dot = safe.lastIndexOf(".");
+    const base = dot > 0 ? safe.slice(0, dot) : safe;
+    const ext = dot > 0 ? safe.slice(dot) : "";
+    const uniqueName = `${base}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+
     const res = await fetch(`${API}/media/file`, {
       method: "POST",
       headers: {
@@ -35,7 +42,7 @@ export async function POST(req: NextRequest) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        name,
+        name: uniqueName,
         contentType,
         size,
         folder: folder || "temp",
