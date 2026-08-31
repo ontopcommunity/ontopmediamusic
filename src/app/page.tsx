@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
+
+const API_BASE =
+  process.env.NEXT_PUBLIC_VIDEO_API_URL || "https://ontop-video-api.onrender.com";
 
 export default function Home() {
   const [songTitle, setSongTitle] = useState("MASHUP HOT TIKTOK - QUINVY REMIX");
@@ -9,7 +12,7 @@ export default function Home() {
   const [videoUrl, setVideoUrl] = useState("");
   const [musicFile, setMusicFile] = useState<File | null>(null);
   const [bgFile, setBgFile] = useState<File | null>(null);
-  const [status, setStatus] = useState("Nhập link hoặc upload → Tạo video");
+  const [status, setStatus] = useState("Nhập link hoặc upload → Tạo video (API free)");
   const [error, setError] = useState<string | null>(null);
   const [isWorking, setIsWorking] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -17,58 +20,18 @@ export default function Home() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [durationHint, setDurationHint] = useState(30);
 
-  const audioProbeRef = useRef<HTMLAudioElement | null>(null);
-
   useEffect(() => {
-    // Probe duration from music URL when possible
     if (!musicUrl.trim() && !musicFile) return;
     const a = new Audio();
-    audioProbeRef.current = a;
     const src = musicFile ? URL.createObjectURL(musicFile) : musicUrl.trim();
     a.src = src;
     a.onloadedmetadata = () => {
       if (isFinite(a.duration) && a.duration > 1) {
-        setDurationHint(Math.min(a.duration, 600));
+        setDurationHint(Math.min(a.duration, 300));
       }
       if (musicFile) URL.revokeObjectURL(src);
     };
   }, [musicUrl, musicFile]);
-
-  /** Upload file lên JSON2Video media qua presigned URL */
-  const uploadToJ2V = async (file: File, folder: string) => {
-    const init = await fetch("/api/json2video/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: (() => {
-          const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-          const dot = safe.lastIndexOf(".");
-          const base = dot > 0 ? safe.slice(0, dot) : safe;
-          const ext = dot > 0 ? safe.slice(dot) : "";
-          return `${base}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
-        })(),
-        contentType: file.type || "application/octet-stream",
-        size: file.size,
-        folder,
-      }),
-    });
-    const initData = await init.json();
-    if (!init.ok || !initData.uploadUrl || !initData.fileUrl) {
-      throw new Error(initData.error || "Không lấy được URL upload");
-    }
-
-    const put = await fetch(initData.uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": file.type || "application/octet-stream",
-      },
-      body: file,
-    });
-    if (!put.ok) {
-      throw new Error(`Upload file thất bại HTTP ${put.status}`);
-    }
-    return initData.fileUrl as string;
-  };
 
   const createVideo = async () => {
     setError(null);
@@ -78,102 +41,106 @@ export default function Home() {
     setIsWorking(true);
 
     try {
-      let finalVideoUrl = videoUrl.trim();
-      let finalMusicUrl = musicUrl.trim();
+      // Wake free tier (cold start)
+      setStatus("Đang đánh thức API free (Render)...");
+      try {
+        await fetch(`${API_BASE}/health`, { cache: "no-store" });
+      } catch {}
 
-      if (bgFile) {
-        setStatus("Đang upload video nền lên JSON2Video...");
-        setProgress(8);
-        finalVideoUrl = await uploadToJ2V(bgFile, "temp");
-      }
-      if (musicFile) {
-        setStatus("Đang upload nhạc lên JSON2Video...");
-        setProgress(16);
-        finalMusicUrl = await uploadToJ2V(musicFile, "temp");
+      setStatus("Gửi job render...");
+      setProgress(10);
+
+      let createRes: Response;
+      const hasFiles = !!(bgFile || musicFile);
+
+      if (hasFiles) {
+        const fd = new FormData();
+        if (bgFile) fd.append("video", bgFile);
+        if (musicFile) fd.append("music", musicFile);
+        if (videoUrl.trim()) fd.append("video_url", videoUrl.trim());
+        if (musicUrl.trim()) fd.append("music_url", musicUrl.trim());
+        fd.append("song_title", songTitle);
+        fd.append("artist", artist);
+        fd.append("logo_url", `${window.location.origin}/logo.png`);
+        fd.append("duration_sec", String(durationHint));
+        createRes = await fetch(`${API_BASE}/v1/render-form`, {
+          method: "POST",
+          body: fd,
+        });
+      } else {
+        if (!videoUrl.trim() || !musicUrl.trim()) {
+          throw new Error("Cần video nền + nhạc (link hoặc upload file).");
+        }
+        createRes = await fetch(`${API_BASE}/v1/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            video_url: videoUrl.trim(),
+            music_url: musicUrl.trim(),
+            song_title: songTitle,
+            artist,
+            logo_url: `${window.location.origin}/logo.png`,
+            duration_sec: durationHint,
+            width: 1280,
+            height: 720,
+            fps: 50,
+          }),
+        });
       }
 
-      if (!finalVideoUrl || !finalMusicUrl) {
+      const createData = await createRes.json().catch(() => ({}));
+      if (!createRes.ok || !createData.job_id) {
         throw new Error(
-          "Cần video nền + nhạc (link công khai hoặc upload file)."
-        );
-      }
-
-      setStatus("Gửi job render JSON2Video...");
-      setProgress(25);
-
-      const createRes = await fetch("/api/json2video/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          videoUrl: finalVideoUrl,
-          musicUrl: finalMusicUrl,
-          songTitle,
-          artist,
-          durationSec: durationHint,
-        }),
-      });
-      const createData = await createRes.json();
-      if (!createRes.ok || !createData.project) {
-        throw new Error(
-          createData.error ||
-            createData.detail?.message ||
+          createData.detail || createData.error || createData.message ||
             `Tạo job thất bại (${createRes.status})`
         );
       }
 
-      const project = createData.project as string;
-      setProjectId(project);
-      setStatus(`Đang render trên JSON2Video… (${project})`);
-      setProgress(35);
+      const jobId = createData.job_id as string;
+      setProjectId(jobId);
+      setStatus(`Đang render trên API free… (${jobId})`);
+      setProgress(20);
 
-      // Poll đến khi xong
       const started = Date.now();
-      const maxWait = 15 * 60 * 1000; // 15 phút
+      const maxWait = 12 * 60 * 1000;
       while (Date.now() - started < maxWait) {
-        await new Promise((r) => setTimeout(r, 4000));
-        const stRes = await fetch(
-          `/api/json2video/status?project=${encodeURIComponent(project)}`
-        );
-        const stData = await stRes.json();
+        await new Promise((r) => setTimeout(r, 3000));
+        const stRes = await fetch(`${API_BASE}/v1/status/${jobId}`, {
+          cache: "no-store",
+        });
+        const stData = await stRes.json().catch(() => ({}));
         if (!stRes.ok) {
-          throw new Error(stData.error || "Lỗi poll status");
+          throw new Error(stData.detail || stData.error || "Lỗi poll status");
         }
         const movie = stData.movie || stData;
         const st = movie.status as string;
-        const pct = typeof movie.progress === "number" ? movie.progress : null;
-        if (pct != null) {
-          setProgress(35 + Math.round((pct / 100) * 60));
-        } else {
-          setProgress((p) => Math.min(90, p + 2));
-        }
-        setStatus(`Render: ${st}${pct != null ? ` ${pct}%` : ""}…`);
+        const pct = typeof movie.progress === "number" ? movie.progress : 0;
+        setProgress(Math.min(95, Math.max(20, pct)));
+        setStatus(`Render: ${st}${movie.message ? " — " + movie.message : ""}`);
 
-        if (st === "done" && movie.url) {
-          setOutputUrl(movie.url);
+        if (st === "done") {
+          const url = `${API_BASE}/v1/download/${jobId}`;
+          setOutputUrl(url);
           setProgress(100);
           setStatus(
-            `✅ Xong · ${movie.duration ? Math.round(movie.duration) + "s · " : ""}${(
-              (movie.size || 0) /
-              1024 /
-              1024
-            ).toFixed(1)}MB`
+            `✅ Xong · ${movie.duration ? Math.round(movie.duration) + "s · " : ""}${
+              movie.size ? (movie.size / 1024 / 1024).toFixed(1) + "MB" : ""
+            }`
           );
-          // auto download
           const a = document.createElement("a");
-          a.href = movie.url;
+          a.href = url;
           a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p50.mp4`;
           a.target = "_blank";
-          a.rel = "noopener";
           document.body.appendChild(a);
           a.click();
           a.remove();
           return;
         }
-        if (st === "error" || st === "timeout") {
-          throw new Error(movie.message || `Render ${st}`);
+        if (st === "error") {
+          throw new Error(movie.message || "Render error");
         }
       }
-      throw new Error("Hết thời gian chờ render (15 phút). Thử lại.");
+      throw new Error("Hết thời gian chờ render.");
     } catch (e: any) {
       console.error(e);
       setError(e?.message || "Lỗi không rõ");
@@ -192,11 +159,11 @@ export default function Home() {
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
               <p className="text-xs text-gray-400 truncate">
-                JSON2Video API · 720p · 50fps · nhạc gốc
+                Free API · FFmpeg · 720p50 · nhạc gốc
               </p>
             </div>
           </div>
-          <div className="text-sm text-cyan-400 shrink-0">Cloud Render</div>
+          <div className="text-sm text-emerald-400 shrink-0">Free forever</div>
         </div>
       </header>
 
@@ -221,7 +188,7 @@ export default function Home() {
           </div>
           <div>
             <label className="block text-sm text-gray-400 mb-1">
-              Nhạc — link công khai hoặc upload file
+              Nhạc — link hoặc upload file
             </label>
             <input
               value={musicUrl}
@@ -258,7 +225,7 @@ export default function Home() {
               setVideoUrl(e.target.value);
               setBgFile(null);
             }}
-            placeholder="https://...mp4 (link công khai)"
+            placeholder="https://...mp4"
             className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 mb-2 focus:outline-none focus:border-[#00f2ea]"
           />
           <input
@@ -277,7 +244,7 @@ export default function Home() {
             </p>
           )}
           <p className="text-xs text-gray-500">
-            Độ dài ước lượng: ~{Math.round(durationHint)}s (theo file nhạc)
+            Độ dài ước lượng: ~{Math.round(durationHint)}s · max 5 phút (gói free)
           </p>
         </section>
 
@@ -286,7 +253,7 @@ export default function Home() {
           disabled={isWorking}
           className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg"
         >
-          {isWorking ? `Đang xử lý… ${progress}%` : "Tạo video (JSON2Video)"}
+          {isWorking ? `Đang xử lý… ${progress}%` : "Tạo video (Free API)"}
         </button>
 
         {isWorking && (
@@ -301,7 +268,7 @@ export default function Home() {
         <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
           {status}
           {projectId && (
-            <div className="text-xs text-gray-600 mt-1">Project: {projectId}</div>
+            <div className="text-xs text-gray-600 mt-1">Job: {projectId}</div>
           )}
         </div>
 
@@ -319,11 +286,6 @@ export default function Home() {
               controls
               playsInline
               className="w-full rounded-xl bg-black max-h-96"
-              onLoadedMetadata={(e) => {
-                try {
-                  e.currentTarget.playbackRate = 1;
-                } catch {}
-              }}
             />
             <a
               href={outputUrl}
@@ -337,9 +299,9 @@ export default function Home() {
         )}
 
         <p className="text-xs text-gray-600 text-center leading-relaxed">
-          Hệ thống dùng JSON2Video API: video nền muted + loop, nhạc gốc full chất lượng,
-          logo góc trên-trái, chữ góc dưới-trái, xuất 720p · 50fps · MP4.
-          Cần env <code className="text-pink-400">JSON2VIDEO_API_KEY</code> trên Vercel.
+          API tự host miễn phí trên Render (FFmpeg): nền cover full, logo góc phải,
+          VIDEO BY ONTOP, tên + tác giả + thanh dọc, 720p50, nhạc gốc.
+          Lần đầu có thể chờ cold start ~30–60s.
         </p>
       </main>
     </div>
