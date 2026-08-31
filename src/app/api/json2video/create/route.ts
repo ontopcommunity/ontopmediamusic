@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 
 const API = "https://api.json2video.com/v2";
 
+function esc(s: string) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 export async function POST(req: NextRequest) {
   const key = process.env.JSON2VIDEO_API_KEY;
   if (!key) {
@@ -50,16 +58,84 @@ export async function POST(req: NextRequest) {
       .slice(0, 80);
     const artistText = String(artist || "").toUpperCase().slice(0, 50);
 
-    /**
-     * Layout khớp ảnh mẫu:
-     * - Video nền cover full khung (không viền đen)
-     * - Góc dưới-trái: thanh dọc trắng mỏng + tên bài (đậm) + tác giả
-     * - Logo góc trên-trái nhỏ
-     * HD 1280x720, 50fps
-     */
+    // Lower-third HTML tĩnh — bar + title + artist góc dưới-trái (giống ảnh mẫu)
+    const lowerHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{
+    width:100%;height:100%;
+    background:transparent!important;
+    overflow:hidden;
+  }
+  body{
+    display:flex;
+    align-items:flex-end;
+    justify-content:flex-start;
+    padding:0 0 48px 48px;
+  }
+  .row{
+    display:flex;
+    flex-direction:row;
+    align-items:stretch;
+    gap:14px;
+    max-width:92%;
+  }
+  .bar{
+    width:3px;
+    min-width:3px;
+    background:#fff;
+    border-radius:1px;
+    align-self:stretch;
+    min-height:52px;
+  }
+  .col{
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    gap:5px;
+    min-width:0;
+  }
+  .title{
+    font-family:Montserrat,Arial,Helvetica,sans-serif;
+    font-weight:700;
+    font-size:26px;
+    line-height:1.15;
+    color:#fff;
+    text-shadow:0 2px 10px rgba(0,0,0,.7);
+    text-transform:uppercase;
+    letter-spacing:.02em;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .artist{
+    font-family:Montserrat,Arial,Helvetica,sans-serif;
+    font-weight:500;
+    font-size:14px;
+    line-height:1.2;
+    color:rgba(255,255,255,.95);
+    text-shadow:0 1px 6px rgba(0,0,0,.55);
+    text-transform:uppercase;
+    letter-spacing:.14em;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+</style></head><body>
+  <div class="row">
+    <div class="bar"></div>
+    <div class="col">
+      <div class="title">${esc(titleText)}</div>
+      <div class="artist">${esc(artistText)}</div>
+    </div>
+  </div>
+</body></html>`;
+
     const movie = {
-      comment: "Ontop Media Music — reference lower-third layout",
-      resolution: "hd",
+      comment: "Ontop — lower third bottom-left like reference",
+      resolution: "hd", // 1280x720
+      width: 1280,
+      height: 720,
       fps: 50,
       quality: "high",
       cache: false,
@@ -70,73 +146,27 @@ export async function POST(req: NextRequest) {
           duration: dur,
           volume: 1,
         },
-        // Logo trên-trái (nhẹ, không che cảnh)
+        // Logo góc trên-trái
         {
           type: "image",
           src: logo,
-          position: "top-left",
           x: 36,
-          y: 28,
-          width: 160,
+          y: 24,
+          width: 150,
           duration: -2,
           cache: true,
         },
-        // Thanh dọc trắng — trước cụm text
+        // Cụm thanh dọc + tên + tác giả — full width bottom area, content left-aligned
         {
           type: "html",
-          html: `<!DOCTYPE html><html><head><meta charset="utf-8">
-<style>
-html,body{margin:0;padding:0;width:100%;height:100%;background:transparent;overflow:hidden}
-.bar{width:3px;height:54px;background:#ffffff;border-radius:1px}
-</style></head><body><div class="bar"></div></body></html>`,
-          width: 6,
-          height: 60,
-          position: "bottom-left",
-          x: 48,
-          y: -56,
+          html: lowerHtml,
+          x: 0,
+          y: 520,
+          width: 1280,
+          height: 200,
           duration: -2,
-          cache: true,
-          wait: 0,
-        },
-        // Tên bài
-        {
-          type: "text",
-          text: titleText,
-          start: 0,
-          duration: -2,
-          position: "bottom-left",
-          x: 66,
-          y: -78,
-          settings: {
-            "font-family": "Montserrat",
-            "font-weight": "700",
-            "font-size": "24px",
-            color: "#FFFFFF",
-            "text-shadow": "0 2px 8px rgba(0,0,0,0.65)",
-            "letter-spacing": "0.02em",
-            "text-align": "left",
-            "vertical-align": "bottom",
-          },
-        },
-        // Tác giả
-        {
-          type: "text",
-          text: artistText || " ",
-          start: 0,
-          duration: -2,
-          position: "bottom-left",
-          x: 66,
-          y: -50,
-          settings: {
-            "font-family": "Montserrat",
-            "font-weight": "500",
-            "font-size": "14px",
-            color: "rgba(255,255,255,0.95)",
-            "text-shadow": "0 1px 6px rgba(0,0,0,0.55)",
-            "letter-spacing": "0.12em",
-            "text-align": "left",
-            "vertical-align": "bottom",
-          },
+          cache: false,
+          wait: 0.5,
         },
       ],
       scenes: [
@@ -151,6 +181,10 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:transparent;overf
               duration: -2,
               volume: 0,
               resize: "cover",
+              x: 0,
+              y: 0,
+              width: 1280,
+              height: 720,
             },
           ],
         },
