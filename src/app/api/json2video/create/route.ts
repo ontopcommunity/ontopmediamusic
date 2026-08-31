@@ -109,7 +109,7 @@ box-shadow:0 0 6px rgba(0,0,0,.45)}
             "letter-spacing": "0.02em",
             "vertical-position": "bottom",
             "horizontal-position": "left",
-            padding: "0 0 72px 56px",
+            padding: "0 0 58px 56px",
           },
         },
         // Tác giả — y chang commit đầu
@@ -127,7 +127,7 @@ box-shadow:0 0 6px rgba(0,0,0,.45)}
             "letter-spacing": "0.08em",
             "vertical-position": "bottom",
             "horizontal-position": "left",
-            padding: "0 0 48px 56px",
+            padding: "0 0 34px 56px",
           },
         },
       ],
