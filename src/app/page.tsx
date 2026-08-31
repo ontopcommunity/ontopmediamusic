@@ -338,7 +338,7 @@ export default function Home() {
 
         <p className="text-xs text-gray-600 text-center leading-relaxed">
           Hệ thống dùng JSON2Video API: video nền muted + loop, nhạc gốc full chất lượng,
-          logo góc trên-trái, chữ góc dưới-trái, xuất 720p · 50fps · MP4.
+          logo góc trên-trái, thanh dọc + tên/tác giả góc dưới-trái (lệch phải nhẹ), xuất 720p · 50fps · MP4.
           Cần env <code className="text-pink-400">JSON2VIDEO_API_KEY</code> trên Vercel.
         </p>
       </main>

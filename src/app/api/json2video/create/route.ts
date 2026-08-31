@@ -71,13 +71,13 @@ export async function POST(req: NextRequest) {
     display:flex;
     align-items:flex-end;
     justify-content:flex-start;
-    padding:0 0 48px 48px;
+    padding:0 0 52px 88px;
   }
   .row{
     display:flex;
     flex-direction:row;
     align-items:stretch;
-    gap:14px;
+    gap:16px;
     max-width:92%;
   }
   .bar{
@@ -86,7 +86,8 @@ export async function POST(req: NextRequest) {
     background:#fff;
     border-radius:1px;
     align-self:stretch;
-    min-height:52px;
+    min-height:56px;
+    box-shadow:0 0 6px rgba(0,0,0,.45);
   }
   .col{
     display:flex;
@@ -160,9 +161,9 @@ export async function POST(req: NextRequest) {
         {
           type: "html",
           html: lowerHtml,
-          x: 0,
+          x: 24,
           y: 520,
-          width: 1280,
+          width: 1256,
           height: 200,
           duration: -2,
           cache: false,
