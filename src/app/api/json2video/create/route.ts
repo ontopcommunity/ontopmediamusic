@@ -2,14 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 
 const API = "https://api.json2video.com/v2";
 
-function esc(s: string) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 export async function POST(req: NextRequest) {
   const key = process.env.JSON2VIDEO_API_KEY;
   if (!key) {
@@ -58,83 +50,17 @@ export async function POST(req: NextRequest) {
       .slice(0, 80);
     const artistText = String(artist || "").toUpperCase().slice(0, 50);
 
-    // Lower-third HTML tĩnh — bar + title + artist góc dưới-trái (giống ảnh mẫu)
-    const lowerHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+    // Thanh dọc trắng — HTML tối giản, sát góc dưới-trái
+    const barHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  html,body{
-    width:100%;height:100%;
-    background:transparent!important;
-    overflow:hidden;
-  }
-  body{
-    display:flex;
-    align-items:flex-end;
-    justify-content:flex-start;
-    padding:0 0 28px 40px;
-  }
-  .row{
-    display:flex;
-    flex-direction:row;
-    align-items:stretch;
-    gap:16px;
-    max-width:92%;
-  }
-  .bar{
-    width:3px;
-    min-width:3px;
-    background:#fff;
-    border-radius:1px;
-    align-self:stretch;
-    min-height:68px;
-    box-shadow:0 0 6px rgba(0,0,0,.45);
-  }
-  .col{
-    display:flex;
-    flex-direction:column;
-    justify-content:center;
-    gap:5px;
-    min-width:0;
-  }
-  .title{
-    font-family:Montserrat,Arial,Helvetica,sans-serif;
-    font-weight:700;
-    font-size:32px;
-    line-height:1.15;
-    color:#fff;
-    text-shadow:0 2px 10px rgba(0,0,0,.7);
-    text-transform:uppercase;
-    letter-spacing:.02em;
-    white-space:nowrap;
-    overflow:hidden;
-    text-overflow:ellipsis;
-  }
-  .artist{
-    font-family:Montserrat,Arial,Helvetica,sans-serif;
-    font-weight:500;
-    font-size:17px;
-    line-height:1.2;
-    color:rgba(255,255,255,.95);
-    text-shadow:0 1px 6px rgba(0,0,0,.55);
-    text-transform:uppercase;
-    letter-spacing:.14em;
-    white-space:nowrap;
-    overflow:hidden;
-    text-overflow:ellipsis;
-  }
-</style></head><body>
-  <div class="row">
-    <div class="bar"></div>
-    <div class="col">
-      <div class="title">${esc(titleText)}</div>
-      <div class="artist">${esc(artistText)}</div>
-    </div>
-  </div>
-</body></html>`;
+html,body{margin:0;padding:0;width:100%;height:100%;background:transparent}
+.bar{width:4px;height:72px;background:#fff;border-radius:1px;
+box-shadow:0 0 8px rgba(0,0,0,.5)}
+</style></head><body><div class="bar"></div></body></html>`;
 
     const movie = {
-      comment: "Ontop — lower third bottom-left like reference",
-      resolution: "hd", // 1280x720
+      comment: "Ontop layout v3 native text bottom-left large",
+      resolution: "hd",
       width: 1280,
       height: 720,
       fps: 50,
@@ -147,27 +73,65 @@ export async function POST(req: NextRequest) {
           duration: dur,
           volume: 1,
         },
-        // Logo góc trên-trái
+        // Logo góc trên-trái — phóng to
         {
           type: "image",
           src: logo,
-          x: 32,
-          y: 22,
-          width: 180,
-          duration: -2,
-          cache: true,
-        },
-        // Cụm thanh dọc + tên + tác giả — full width bottom area, content left-aligned
-        {
-          type: "html",
-          html: lowerHtml,
-          x: 0,
-          y: 560,
-          width: 1280,
-          height: 160,
+          x: 28,
+          y: 20,
+          width: 200,
           duration: -2,
           cache: false,
-          wait: 0.5,
+        },
+        // Thanh dọc sát góc dưới-trái
+        {
+          type: "html",
+          html: barHtml,
+          x: 36,
+          y: 620,
+          width: 12,
+          height: 80,
+          duration: -2,
+          cache: false,
+          wait: 0.2,
+        },
+        // Tên bài — to, sát đáy
+        {
+          type: "text",
+          text: titleText,
+          position: "bottom-left",
+          x: 56,
+          y: -56,
+          duration: -2,
+          settings: {
+            "font-family": "Montserrat",
+            "font-weight": "700",
+            "font-size": "34px",
+            color: "#ffffff",
+            "text-shadow": "0 2px 12px rgba(0,0,0,0.75)",
+            "text-transform": "uppercase",
+            "letter-spacing": "0.02em",
+            "text-align": "left",
+          },
+        },
+        // Tác giả — dưới tên một chút
+        {
+          type: "text",
+          text: artistText || " ",
+          position: "bottom-left",
+          x: 56,
+          y: -28,
+          duration: -2,
+          settings: {
+            "font-family": "Montserrat",
+            "font-weight": "500",
+            "font-size": "18px",
+            color: "rgba(255,255,255,0.92)",
+            "text-shadow": "0 1px 8px rgba(0,0,0,0.65)",
+            "text-transform": "uppercase",
+            "letter-spacing": "0.12em",
+            "text-align": "left",
+          },
         },
       ],
       scenes: [
