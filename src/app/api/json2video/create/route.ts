@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
     display:flex;
     align-items:flex-end;
     justify-content:flex-start;
-    padding:0 0 52px 88px;
+    padding:0 0 28px 40px;
   }
   .row{
     display:flex;
@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
     background:#fff;
     border-radius:1px;
     align-self:stretch;
-    min-height:56px;
+    min-height:68px;
     box-shadow:0 0 6px rgba(0,0,0,.45);
   }
   .col{
@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
   .title{
     font-family:Montserrat,Arial,Helvetica,sans-serif;
     font-weight:700;
-    font-size:26px;
+    font-size:32px;
     line-height:1.15;
     color:#fff;
     text-shadow:0 2px 10px rgba(0,0,0,.7);
@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
   .artist{
     font-family:Montserrat,Arial,Helvetica,sans-serif;
     font-weight:500;
-    font-size:14px;
+    font-size:17px;
     line-height:1.2;
     color:rgba(255,255,255,.95);
     text-shadow:0 1px 6px rgba(0,0,0,.55);
@@ -151,9 +151,9 @@ export async function POST(req: NextRequest) {
         {
           type: "image",
           src: logo,
-          x: 36,
-          y: 24,
-          width: 150,
+          x: 32,
+          y: 22,
+          width: 180,
           duration: -2,
           cache: true,
         },
@@ -161,10 +161,10 @@ export async function POST(req: NextRequest) {
         {
           type: "html",
           html: lowerHtml,
-          x: 24,
-          y: 520,
-          width: 1256,
-          height: 200,
+          x: 0,
+          y: 560,
+          width: 1280,
+          height: 160,
           duration: -2,
           cache: false,
           wait: 0.5,
