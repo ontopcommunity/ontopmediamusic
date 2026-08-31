@@ -2,9 +2,6 @@
 
 import { useState, useEffect } from "react";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_VIDEO_API_URL || "https://ontop-video-api.onrender.com";
-
 export default function Home() {
   const [songTitle, setSongTitle] = useState("MASHUP HOT TIKTOK - QUINVY REMIX");
   const [artist, setArtist] = useState("OCEAN MUSIC");
@@ -12,7 +9,7 @@ export default function Home() {
   const [videoUrl, setVideoUrl] = useState("");
   const [musicFile, setMusicFile] = useState<File | null>(null);
   const [bgFile, setBgFile] = useState<File | null>(null);
-  const [status, setStatus] = useState("Nhập link hoặc upload → Tạo video (API free)");
+  const [status, setStatus] = useState("Nhập link hoặc upload → Tạo video");
   const [error, setError] = useState<string | null>(null);
   const [isWorking, setIsWorking] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -41,14 +38,15 @@ export default function Home() {
     setIsWorking(true);
 
     try {
-      // Wake free tier (cold start)
-      setStatus("Đang đánh thức API free (Render)...");
+      setStatus("Đang kết nối API render...");
+      setProgress(5);
+      // same-origin proxy → không bị Failed to fetch / CORS
       try {
-        await fetch(`${API_BASE}/health`, { cache: "no-store" });
+        await fetch("/api/video/health", { cache: "no-store" });
       } catch {}
 
       setStatus("Gửi job render...");
-      setProgress(10);
+      setProgress(12);
 
       let createRes: Response;
       const hasFiles = !!(bgFile || musicFile);
@@ -63,7 +61,7 @@ export default function Home() {
         fd.append("artist", artist);
         fd.append("logo_url", `${window.location.origin}/logo.png`);
         fd.append("duration_sec", String(durationHint));
-        createRes = await fetch(`${API_BASE}/v1/render-form`, {
+        createRes = await fetch("/api/video/render", {
           method: "POST",
           body: fd,
         });
@@ -71,7 +69,7 @@ export default function Home() {
         if (!videoUrl.trim() || !musicUrl.trim()) {
           throw new Error("Cần video nền + nhạc (link hoặc upload file).");
         }
-        createRes = await fetch(`${API_BASE}/v1/render`, {
+        createRes = await fetch("/api/video/render", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -89,48 +87,54 @@ export default function Home() {
       }
 
       const createData = await createRes.json().catch(() => ({}));
-      if (!createRes.ok || !createData.job_id) {
+      if (!createRes.ok || !(createData.job_id || createData.project)) {
         throw new Error(
-          createData.detail || createData.error || createData.message ||
+          createData.error ||
+            createData.detail ||
+            createData.message ||
             `Tạo job thất bại (${createRes.status})`
         );
       }
 
-      const jobId = createData.job_id as string;
+      const jobId = (createData.job_id || createData.project) as string;
       setProjectId(jobId);
-      setStatus(`Đang render trên API free… (${jobId})`);
+      setStatus(`Đang render… (${jobId})`);
       setProgress(20);
 
       const started = Date.now();
       const maxWait = 12 * 60 * 1000;
       while (Date.now() - started < maxWait) {
         await new Promise((r) => setTimeout(r, 3000));
-        const stRes = await fetch(`${API_BASE}/v1/status/${jobId}`, {
-          cache: "no-store",
-        });
+        const stRes = await fetch(
+          `/api/video/status?id=${encodeURIComponent(jobId)}`,
+          { cache: "no-store" }
+        );
         const stData = await stRes.json().catch(() => ({}));
         if (!stRes.ok) {
-          throw new Error(stData.detail || stData.error || "Lỗi poll status");
+          throw new Error(stData.error || stData.detail || "Lỗi poll status");
         }
         const movie = stData.movie || stData;
         const st = movie.status as string;
         const pct = typeof movie.progress === "number" ? movie.progress : 0;
         setProgress(Math.min(95, Math.max(20, pct)));
-        setStatus(`Render: ${st}${movie.message ? " — " + movie.message : ""}`);
+        setStatus(
+          `Render: ${st}${movie.message ? " — " + movie.message : ""}`
+        );
 
         if (st === "done") {
-          const url = `${API_BASE}/v1/download/${jobId}`;
+          const url = `/api/video/download?id=${encodeURIComponent(jobId)}`;
           setOutputUrl(url);
           setProgress(100);
           setStatus(
-            `✅ Xong · ${movie.duration ? Math.round(movie.duration) + "s · " : ""}${
-              movie.size ? (movie.size / 1024 / 1024).toFixed(1) + "MB" : ""
-            }`
+            `✅ Xong · ${
+              movie.duration ? Math.round(movie.duration) + "s · " : ""
+            }${movie.size ? (movie.size / 1024 / 1024).toFixed(1) + "MB" : ""}`
           );
           const a = document.createElement("a");
           a.href = url;
-          a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p50.mp4`;
-          a.target = "_blank";
+          a.download = `${(songTitle || "video")
+            .replace(/\s+/g, "_")
+            .slice(0, 40)}_720p50.mp4`;
           document.body.appendChild(a);
           a.click();
           a.remove();
@@ -143,7 +147,15 @@ export default function Home() {
       throw new Error("Hết thời gian chờ render.");
     } catch (e: any) {
       console.error(e);
-      setError(e?.message || "Lỗi không rõ");
+      const msg = e?.message || "Lỗi không rõ";
+      // dịch Failed to fetch thành hướng dẫn rõ
+      if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+        setError(
+          "Mất kết nối mạng tới server. Thử lại: F5 trang, chờ 10s rồi bấm Tạo video (API free có thể đang cold start)."
+        );
+      } else {
+        setError(msg);
+      }
       setStatus("Thất bại");
     } finally {
       setIsWorking(false);
@@ -155,15 +167,19 @@ export default function Home() {
       <header className="border-b border-[#262626] bg-[#111] sticky top-0 z-50">
         <div className="max-w-3xl mx-auto px-4 py-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
+            <img
+              src="/logo.png"
+              alt="Ontop"
+              className="h-9 w-auto object-contain"
+            />
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
               <p className="text-xs text-gray-400 truncate">
-                Free API · FFmpeg · 720p50 · nhạc gốc
+                Free API · FFmpeg · 720p50
               </p>
             </div>
           </div>
-          <div className="text-sm text-emerald-400 shrink-0">Free forever</div>
+          <div className="text-sm text-emerald-400 shrink-0">Free</div>
         </div>
       </header>
 
@@ -179,7 +195,9 @@ export default function Home() {
             />
           </div>
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Tác giả / Label</label>
+            <label className="block text-sm text-gray-400 mb-1">
+              Tác giả / Label
+            </label>
             <input
               value={artist}
               onChange={(e) => setArtist(e.target.value)}
@@ -188,7 +206,7 @@ export default function Home() {
           </div>
           <div>
             <label className="block text-sm text-gray-400 mb-1">
-              Nhạc — link hoặc upload file
+              Nhạc — link hoặc upload
             </label>
             <input
               value={musicUrl}
@@ -211,7 +229,8 @@ export default function Home() {
             />
             {musicFile && (
               <p className="text-xs text-green-400 mt-1">
-                ✓ {musicFile.name} ({(musicFile.size / 1024 / 1024).toFixed(2)} MB)
+                ✓ {musicFile.name} (
+                {(musicFile.size / 1024 / 1024).toFixed(2)} MB)
               </p>
             )}
           </div>
@@ -244,7 +263,7 @@ export default function Home() {
             </p>
           )}
           <p className="text-xs text-gray-500">
-            Độ dài ước lượng: ~{Math.round(durationHint)}s · max 5 phút (gói free)
+            ~{Math.round(durationHint)}s · max ~5 phút
           </p>
         </section>
 
@@ -253,7 +272,7 @@ export default function Home() {
           disabled={isWorking}
           className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg"
         >
-          {isWorking ? `Đang xử lý… ${progress}%` : "Tạo video (Free API)"}
+          {isWorking ? `Đang xử lý… ${progress}%` : "Tạo video"}
         </button>
 
         {isWorking && (
@@ -289,20 +308,12 @@ export default function Home() {
             />
             <a
               href={outputUrl}
-              target="_blank"
-              rel="noopener noreferrer"
               className="block text-center py-3 rounded-xl bg-[#ff0050] font-medium"
             >
-              Mở / Tải MP4
+              Tải MP4
             </a>
           </section>
         )}
-
-        <p className="text-xs text-gray-600 text-center leading-relaxed">
-          API tự host miễn phí trên Render (FFmpeg): nền cover full, logo góc phải,
-          VIDEO BY ONTOP, tên + tác giả + thanh dọc, 720p50, nhạc gốc.
-          Lần đầu có thể chờ cold start ~30–60s.
-        </p>
       </main>
     </div>
   );
