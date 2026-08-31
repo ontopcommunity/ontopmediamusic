@@ -47,22 +47,21 @@ export async function POST(req: NextRequest) {
     const logo = logoUrl || `${req.nextUrl.origin}/logo.png`;
     const titleText = String(songTitle || "UNTITLED")
       .toUpperCase()
-      .slice(0, 80);
-    const artistText = String(artist || "").toUpperCase().slice(0, 50);
+      .slice(0, 90);
+    const artistText = String(artist || "").toUpperCase().slice(0, 60);
 
-    // Thanh dọc trắng — HTML tối giản, sát góc dưới-trái
+    // Thanh dọc trắng trước cụm chữ (góc dưới-trái)
     const barHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
-html,body{margin:0;padding:0;width:100%;height:100%;background:transparent}
-.bar{width:4px;height:72px;background:#fff;border-radius:1px;
-box-shadow:0 0 8px rgba(0,0,0,.5)}
+html,body{margin:0;padding:0;width:100%;height:100%;background:transparent;overflow:hidden}
+.bar{width:3px;height:64px;background:#ffffff;border-radius:1px;
+box-shadow:0 0 6px rgba(0,0,0,.45)}
 </style></head><body><div class="bar"></div></body></html>`;
 
+    // Layout gốc commit d66f23b + thanh dọc + tên đậm hơn
     const movie = {
-      comment: "Ontop layout v3 native text bottom-left large",
-      resolution: "hd",
-      width: 1280,
-      height: 720,
+      comment: "Ontop Media Music — layout d66f23b + bar + bold title",
+      resolution: "hd", // 1280x720
       fps: 50,
       quality: "high",
       cache: false,
@@ -73,64 +72,62 @@ box-shadow:0 0 8px rgba(0,0,0,.5)}
           duration: dur,
           volume: 1,
         },
-        // Logo góc trên-trái — phóng to
+        // Logo góc trên-trái (như commit đầu)
         {
           type: "image",
           src: logo,
-          x: 28,
-          y: 20,
-          width: 200,
+          x: 40,
+          y: 28,
+          width: 220,
           duration: -2,
-          cache: false,
+          cache: true,
         },
-        // Thanh dọc sát góc dưới-trái
+        // Thanh dọc — sát cụm chữ dưới-trái
         {
           type: "html",
           html: barHtml,
-          x: 36,
+          x: 40,
           y: 620,
-          width: 12,
-          height: 80,
+          width: 10,
+          height: 70,
           duration: -2,
           cache: false,
           wait: 0.2,
         },
-        // Tên bài — to, sát đáy
+        // Tên bài — layout gốc, font đậm hơn (700)
         {
           type: "text",
           text: titleText,
-          position: "bottom-left",
-          x: 56,
-          y: -56,
           duration: -2,
           settings: {
-            "font-family": "Montserrat",
+            "font-family": "Be Vietnam Pro",
             "font-weight": "700",
-            "font-size": "34px",
+            "font-size": "28px",
             color: "#ffffff",
-            "text-shadow": "0 2px 12px rgba(0,0,0,0.75)",
+            "text-shadow": "0 2px 8px rgba(0,0,0,0.65)",
             "text-transform": "uppercase",
             "letter-spacing": "0.02em",
-            "text-align": "left",
+            "vertical-position": "bottom",
+            "horizontal-position": "left",
+            padding: "0 0 72px 56px",
           },
         },
-        // Tác giả — dưới tên một chút
+        // Tác giả — y chang commit đầu
         {
           type: "text",
-          text: artistText || " ",
-          position: "bottom-left",
-          x: 56,
-          y: -28,
+          text: artistText,
           duration: -2,
           settings: {
-            "font-family": "Montserrat",
+            "font-family": "Inter",
             "font-weight": "500",
             "font-size": "18px",
             color: "rgba(255,255,255,0.92)",
-            "text-shadow": "0 1px 8px rgba(0,0,0,0.65)",
+            "text-shadow": "0 1px 6px rgba(0,0,0,0.55)",
             "text-transform": "uppercase",
-            "letter-spacing": "0.12em",
-            "text-align": "left",
+            "letter-spacing": "0.08em",
+            "vertical-position": "bottom",
+            "horizontal-position": "left",
+            padding: "0 0 48px 56px",
           },
         },
       ],
@@ -146,10 +143,6 @@ box-shadow:0 0 8px rgba(0,0,0,.5)}
               duration: -2,
               volume: 0,
               resize: "cover",
-              x: 0,
-              y: 0,
-              width: 1280,
-              height: 720,
             },
           ],
         },
