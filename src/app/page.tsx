@@ -1,32 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
-
-/** Upload file lớn → thẳng Render (Vercel limit ~4.5MB). Status/health qua proxy. */
-const RENDER = "https://ontop-video-api.onrender.com";
-const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200MB
-
-const P = {
-  health: "/api/video/health",
-  status: (id: string) => `/api/video/status?id=${encodeURIComponent(id)}`,
-};
-
-async function apiFetch(url: string, init?: RequestInit, tries = 3): Promise<Response> {
-  let last: any;
-  for (let i = 0; i < tries; i++) {
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 180000); // 3 phút cho upload lớn
-      const res = await fetch(url, { ...init, cache: "no-store", signal: ctrl.signal });
-      clearTimeout(timer);
-      return res;
-    } catch (e) {
-      last = e;
-      await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
-    }
-  }
-  throw last || new Error("Network error");
-}
+import { useState, useRef, useEffect } from "react";
 
 export default function Home() {
   const [songTitle, setSongTitle] = useState("MASHUP HOT TIKTOK - QUINVY REMIX");
@@ -35,39 +9,65 @@ export default function Home() {
   const [videoUrl, setVideoUrl] = useState("");
   const [musicFile, setMusicFile] = useState<File | null>(null);
   const [bgFile, setBgFile] = useState<File | null>(null);
-  const [status, setStatus] = useState("Sẵn sàng · upload tối đa 200MB");
+  const [status, setStatus] = useState("Nhập link hoặc upload → Tạo video");
   const [error, setError] = useState<string | null>(null);
   const [isWorking, setIsWorking] = useState(false);
   const [progress, setProgress] = useState(0);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [durationHint, setDurationHint] = useState(30);
-  const [apiOk, setApiOk] = useState<boolean | null>(null);
+
+  const audioProbeRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    apiFetch(P.health, {}, 4)
-      .then(async (r) => {
-        const d = await r.json().catch(() => ({}));
-        setApiOk(!!d.ok);
-      })
-      .catch(() => setApiOk(false));
-  }, []);
-
-  useEffect(() => {
+    // Probe duration from music URL when possible
     if (!musicUrl.trim() && !musicFile) return;
     const a = new Audio();
+    audioProbeRef.current = a;
     const src = musicFile ? URL.createObjectURL(musicFile) : musicUrl.trim();
     a.src = src;
     a.onloadedmetadata = () => {
-      if (isFinite(a.duration) && a.duration > 1) setDurationHint(Math.min(a.duration, 300));
+      if (isFinite(a.duration) && a.duration > 1) {
+        setDurationHint(Math.min(a.duration, 600));
+      }
       if (musicFile) URL.revokeObjectURL(src);
     };
   }, [musicUrl, musicFile]);
 
-  const checkSize = (f: File | null, label: string) => {
-    if (f && f.size > MAX_FILE_BYTES) {
-      throw new Error(`${label} vượt 200MB (${(f.size / 1024 / 1024).toFixed(1)}MB).`);
+  /** Upload file lên JSON2Video media qua presigned URL */
+  const uploadToJ2V = async (file: File, folder: string) => {
+    const init = await fetch("/api/json2video/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: (() => {
+          const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const dot = safe.lastIndexOf(".");
+          const base = dot > 0 ? safe.slice(0, dot) : safe;
+          const ext = dot > 0 ? safe.slice(dot) : "";
+          return `${base}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+        })(),
+        contentType: file.type || "application/octet-stream",
+        size: file.size,
+        folder,
+      }),
+    });
+    const initData = await init.json();
+    if (!init.ok || !initData.uploadUrl || !initData.fileUrl) {
+      throw new Error(initData.error || "Không lấy được URL upload");
     }
+
+    const put = await fetch(initData.uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": file.type || "application/octet-stream",
+      },
+      body: file,
+    });
+    if (!put.ok) {
+      throw new Error(`Upload file thất bại HTTP ${put.status}`);
+    }
+    return initData.fileUrl as string;
   };
 
   const createVideo = async () => {
@@ -78,122 +78,105 @@ export default function Home() {
     setIsWorking(true);
 
     try {
-      checkSize(bgFile, "Video nền");
-      checkSize(musicFile, "File nhạc");
+      let finalVideoUrl = videoUrl.trim();
+      let finalMusicUrl = musicUrl.trim();
 
-      setStatus("Kết nối API...");
-      setProgress(5);
-      const h = await apiFetch(P.health, {}, 5);
-      const hd = await h.json().catch(() => ({}));
-      if (!hd.ok) {
-        // thử ping thẳng Render
-        const h2 = await apiFetch(`${RENDER}/v1/ping`, {}, 3);
-        const d2 = await h2.json().catch(() => ({}));
-        if (!d2.ok) throw new Error("API chưa sẵn sàng (cold start). Đợi 20s bấm lại.");
+      if (bgFile) {
+        setStatus("Đang upload video nền lên JSON2Video...");
+        setProgress(8);
+        finalVideoUrl = await uploadToJ2V(bgFile, "temp");
       }
-      setApiOk(true);
-
-      setStatus("Upload / gửi job (file lớn có thể mất vài phút)...");
-      setProgress(12);
-
-      let createRes: Response;
-      if (bgFile || musicFile) {
-        const fd = new FormData();
-        if (bgFile) fd.append("video", bgFile);
-        if (musicFile) fd.append("music", musicFile);
-        if (videoUrl.trim()) fd.append("video_url", videoUrl.trim());
-        if (musicUrl.trim()) fd.append("music_url", musicUrl.trim());
-        fd.append("song_title", songTitle);
-        fd.append("artist", artist);
-        fd.append("logo_url", `${window.location.origin}/logo.png`);
-        fd.append("duration_sec", String(durationHint));
-        // Thẳng Render — hỗ trợ tới 200MB (không qua Vercel body limit)
-        createRes = await apiFetch(`${RENDER}/v1/render-form`, {
-          method: "POST",
-          body: fd,
-        }, 2);
-      } else {
-        if (!videoUrl.trim() || !musicUrl.trim()) {
-          throw new Error("Cần video nền + nhạc (upload ≤200MB hoặc link).");
-        }
-        // JSON nhỏ → proxy Vercel cũng được, nhưng Render direct ổn định hơn
-        createRes = await apiFetch(`${RENDER}/v1/render`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            video_url: videoUrl.trim(),
-            music_url: musicUrl.trim(),
-            song_title: songTitle,
-            artist,
-            logo_url: `${window.location.origin}/logo.png`,
-            duration_sec: durationHint,
-            width: 1280,
-            height: 720,
-            fps: 50,
-          }),
-        }, 3);
+      if (musicFile) {
+        setStatus("Đang upload nhạc lên JSON2Video...");
+        setProgress(16);
+        finalMusicUrl = await uploadToJ2V(musicFile, "temp");
       }
 
-      const createData = await createRes.json().catch(() => ({}));
-      if (!createRes.ok || !(createData.job_id || createData.project)) {
+      if (!finalVideoUrl || !finalMusicUrl) {
         throw new Error(
-          createData.error ||
-            createData.detail ||
-            createData.message ||
-            `Tạo job thất bại HTTP ${createRes.status}`
+          "Cần video nền + nhạc (link công khai hoặc upload file)."
         );
       }
 
-      const jobId = (createData.job_id || createData.project) as string;
-      setProjectId(jobId);
-      setStatus(`Render job ${jobId}`);
+      setStatus("Gửi job render JSON2Video...");
       setProgress(25);
 
-      const t0 = Date.now();
-      while (Date.now() - t0 < 20 * 60 * 1000) {
-        await new Promise((r) => setTimeout(r, 3000));
-        let stRes: Response;
-        try {
-          stRes = await apiFetch(P.status(jobId), {}, 2);
-        } catch {
-          stRes = await apiFetch(`${RENDER}/v1/status/${jobId}`, {}, 2);
+      const createRes = await fetch("/api/json2video/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoUrl: finalVideoUrl,
+          musicUrl: finalMusicUrl,
+          songTitle,
+          artist,
+          durationSec: durationHint,
+        }),
+      });
+      const createData = await createRes.json();
+      if (!createRes.ok || !createData.project) {
+        throw new Error(
+          createData.error ||
+            createData.detail?.message ||
+            `Tạo job thất bại (${createRes.status})`
+        );
+      }
+
+      const project = createData.project as string;
+      setProjectId(project);
+      setStatus(`Đang render trên JSON2Video… (${project})`);
+      setProgress(35);
+
+      // Poll đến khi xong
+      const started = Date.now();
+      const maxWait = 15 * 60 * 1000; // 15 phút
+      while (Date.now() - started < maxWait) {
+        await new Promise((r) => setTimeout(r, 4000));
+        const stRes = await fetch(
+          `/api/json2video/status?project=${encodeURIComponent(project)}`
+        );
+        const stData = await stRes.json();
+        if (!stRes.ok) {
+          throw new Error(stData.error || "Lỗi poll status");
         }
-        const stData = await stRes.json().catch(() => ({}));
-        if (!stRes.ok) throw new Error(stData.error || `Status HTTP ${stRes.status}`);
         const movie = stData.movie || stData;
         const st = movie.status as string;
-        setProgress(Math.min(95, Math.max(25, movie.progress || 0)));
-        setStatus(`Render: ${st}${movie.message ? " — " + movie.message : ""}`);
+        const pct = typeof movie.progress === "number" ? movie.progress : null;
+        if (pct != null) {
+          setProgress(35 + Math.round((pct / 100) * 60));
+        } else {
+          setProgress((p) => Math.min(90, p + 2));
+        }
+        setStatus(`Render: ${st}${pct != null ? ` ${pct}%` : ""}…`);
 
-        if (st === "done") {
-          // Tải thẳng từ Render (file output có thể lớn)
-          const url = `${RENDER}/v1/download/${jobId}`;
-          setOutputUrl(url);
+        if (st === "done" && movie.url) {
+          setOutputUrl(movie.url);
           setProgress(100);
           setStatus(
-            `✅ Xong · ${movie.duration ? Math.round(movie.duration) + "s · " : ""}${
-              movie.size ? (movie.size / 1024 / 1024).toFixed(1) + "MB" : ""
-            }`
+            `✅ Xong · ${movie.duration ? Math.round(movie.duration) + "s · " : ""}${(
+              (movie.size || 0) /
+              1024 /
+              1024
+            ).toFixed(1)}MB`
           );
+          // auto download
           const a = document.createElement("a");
-          a.href = url;
-          a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}.mp4`;
+          a.href = movie.url;
+          a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p50.mp4`;
           a.target = "_blank";
+          a.rel = "noopener";
           document.body.appendChild(a);
           a.click();
           a.remove();
           return;
         }
-        if (st === "error") throw new Error(movie.message || "Render error");
+        if (st === "error" || st === "timeout") {
+          throw new Error(movie.message || `Render ${st}`);
+        }
       }
-      throw new Error("Timeout 20 phút");
+      throw new Error("Hết thời gian chờ render (15 phút). Thử lại.");
     } catch (e: any) {
       console.error(e);
-      let msg = e?.message || "Lỗi";
-      if (e?.name === "AbortError") {
-        msg = "Timeout upload/render. File quá lớn hoặc mạng chậm — thử lại.";
-      }
-      setError(msg);
+      setError(e?.message || "Lỗi không rõ");
       setStatus("Thất bại");
     } finally {
       setIsWorking(false);
@@ -208,63 +191,63 @@ export default function Home() {
             <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400">Upload tới 200MB · API free</p>
+              <p className="text-xs text-gray-400 truncate">
+                JSON2Video API · 720p · 50fps · nhạc gốc
+              </p>
             </div>
           </div>
-          <div
-            className={`text-sm shrink-0 ${
-              apiOk ? "text-emerald-400" : apiOk === false ? "text-red-400" : "text-gray-500"
-            }`}
-          >
-            API {apiOk === null ? "…" : apiOk ? "OK" : "OFF"}
-          </div>
+          <div className="text-sm text-cyan-400 shrink-0">Cloud Render</div>
         </div>
       </header>
 
       <main className="max-w-3xl mx-auto px-4 py-8 space-y-6">
         <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
-          <h2 className="text-lg font-semibold">1. Nhạc</h2>
-          <input
-            value={songTitle}
-            onChange={(e) => setSongTitle(e.target.value)}
-            className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3"
-            placeholder="Tên bài"
-          />
-          <input
-            value={artist}
-            onChange={(e) => setArtist(e.target.value)}
-            className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3"
-            placeholder="Tác giả"
-          />
-          <input
-            value={musicUrl}
-            onChange={(e) => {
-              setMusicUrl(e.target.value);
-              setMusicFile(null);
-            }}
-            placeholder="Link nhạc https://..."
-            className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3"
-          />
-          <input
-            type="file"
-            accept="audio/*,.mp3,.m4a,.wav"
-            onChange={(e) => {
-              const f = e.target.files?.[0] || null;
-              if (f && f.size > MAX_FILE_BYTES) {
-                setError(`Nhạc vượt 200MB (${(f.size / 1024 / 1024).toFixed(1)}MB)`);
-                return;
-              }
-              setMusicFile(f);
-              if (f) setMusicUrl("");
-              setError(null);
-            }}
-            className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#ff0050] file:text-white"
-          />
-          {musicFile && (
-            <p className="text-xs text-green-400">
-              ✓ {musicFile.name} ({(musicFile.size / 1024 / 1024).toFixed(2)} MB)
-            </p>
-          )}
+          <h2 className="text-lg font-semibold">1. Thông tin nhạc</h2>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Tên bài</label>
+            <input
+              value={songTitle}
+              onChange={(e) => setSongTitle(e.target.value)}
+              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050]"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Tác giả / Label</label>
+            <input
+              value={artist}
+              onChange={(e) => setArtist(e.target.value)}
+              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050]"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">
+              Nhạc — link công khai hoặc upload file
+            </label>
+            <input
+              value={musicUrl}
+              onChange={(e) => {
+                setMusicUrl(e.target.value);
+                setMusicFile(null);
+              }}
+              placeholder="https://...mp3"
+              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 mb-2 focus:outline-none focus:border-[#ff0050]"
+            />
+            <input
+              type="file"
+              accept="audio/*,.mp3,.m4a,.wav"
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                setMusicFile(f);
+                if (f) setMusicUrl("");
+              }}
+              className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#ff0050] file:text-white"
+            />
+            {musicFile && (
+              <p className="text-xs text-green-400 mt-1">
+                ✓ {musicFile.name} ({(musicFile.size / 1024 / 1024).toFixed(2)} MB)
+              </p>
+            )}
+          </div>
         </section>
 
         <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
@@ -275,23 +258,18 @@ export default function Home() {
               setVideoUrl(e.target.value);
               setBgFile(null);
             }}
-            placeholder="Link video https://..."
-            className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3"
+            placeholder="https://...mp4 (link công khai)"
+            className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 mb-2 focus:outline-none focus:border-[#00f2ea]"
           />
           <input
             type="file"
             accept="video/*,.mp4,.webm,.mov"
             onChange={(e) => {
               const f = e.target.files?.[0] || null;
-              if (f && f.size > MAX_FILE_BYTES) {
-                setError(`Video vượt 200MB (${(f.size / 1024 / 1024).toFixed(1)}MB)`);
-                return;
-              }
               setBgFile(f);
               if (f) setVideoUrl("");
-              setError(null);
             }}
-            className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#00f2ea] file:text-black"
+            className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#00f2ea] file:text-black file:font-medium"
           />
           {bgFile && (
             <p className="text-xs text-green-400">
@@ -299,7 +277,7 @@ export default function Home() {
             </p>
           )}
           <p className="text-xs text-gray-500">
-            ~{Math.round(durationHint)}s · Mỗi file tối đa <b className="text-gray-300">200MB</b>
+            Độ dài ước lượng: ~{Math.round(durationHint)}s (theo file nhạc)
           </p>
         </section>
 
@@ -308,7 +286,7 @@ export default function Home() {
           disabled={isWorking}
           className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg"
         >
-          {isWorking ? `Đang xử lý… ${progress}%` : "Tạo video"}
+          {isWorking ? `Đang xử lý… ${progress}%` : "Tạo video (JSON2Video)"}
         </button>
 
         {isWorking && (
@@ -322,7 +300,9 @@ export default function Home() {
 
         <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
           {status}
-          {projectId && <div className="text-xs text-gray-600 mt-1">Job: {projectId}</div>}
+          {projectId && (
+            <div className="text-xs text-gray-600 mt-1">Project: {projectId}</div>
+          )}
         </div>
 
         {error && (
@@ -333,23 +313,34 @@ export default function Home() {
 
         {outputUrl && (
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
-            <h2 className="text-lg font-semibold">Kết quả</h2>
+            <h2 className="text-lg font-semibold">Video đã render</h2>
             <video
               src={outputUrl}
               controls
               playsInline
               className="w-full rounded-xl bg-black max-h-96"
+              onLoadedMetadata={(e) => {
+                try {
+                  e.currentTarget.playbackRate = 1;
+                } catch {}
+              }}
             />
             <a
               href={outputUrl}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="block text-center py-3 rounded-xl bg-[#ff0050] font-medium"
             >
-              Tải MP4
+              Mở / Tải MP4
             </a>
           </section>
         )}
+
+        <p className="text-xs text-gray-600 text-center leading-relaxed">
+          Hệ thống dùng JSON2Video API: video nền muted + loop, nhạc gốc full chất lượng,
+          logo góc trên-trái, chữ góc dưới-trái, xuất 720p · 50fps · MP4.
+          Cần env <code className="text-pink-400">JSON2VIDEO_API_KEY</code> trên Vercel.
+        </p>
       </main>
     </div>
   );
