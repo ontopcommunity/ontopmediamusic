@@ -16,6 +16,7 @@ export default function Home() {
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [durationHint, setDurationHint] = useState(30);
+  const [videoDurationHint, setVideoDurationHint] = useState(0);
 
   const audioProbeRef = useRef<HTMLAudioElement | null>(null);
 
@@ -33,6 +34,26 @@ export default function Home() {
       if (musicFile) URL.revokeObjectURL(src);
     };
   }, [musicUrl, musicFile]);
+
+
+  const probeMediaDuration = (src: string, kind: "audio" | "video") =>
+    new Promise<number>((resolve) => {
+      const el = kind === "audio" ? new Audio() : document.createElement("video");
+      el.preload = "metadata";
+      el.src = src;
+      const done = (v: number) => {
+        try {
+          if (kind === "video") (el as HTMLVideoElement).removeAttribute("src");
+        } catch {}
+        resolve(v);
+      };
+      el.onloadedmetadata = () => {
+        const d = el.duration;
+        done(isFinite(d) && d > 0 ? d : 0);
+      };
+      el.onerror = () => done(0);
+      setTimeout(() => done(0), 8000);
+    });
 
   /** Upload file lên JSON2Video media qua presigned URL */
   const uploadToJ2V = async (file: File, folder: string) => {
@@ -81,14 +102,52 @@ export default function Home() {
       let finalVideoUrl = videoUrl.trim();
       let finalMusicUrl = musicUrl.trim();
 
+      // Đo độ dài nhạc + video nền để cắt đoạn ngẫu nhiên
+      setStatus("Đang đo độ dài nhạc / video nền...");
+      setProgress(4);
+      let musicDur = durationHint;
+      let videoDur = videoDurationHint;
+
+      if (musicFile) {
+        const src = URL.createObjectURL(musicFile);
+        const d = await probeMediaDuration(src, "audio");
+        URL.revokeObjectURL(src);
+        if (d > 1) musicDur = Math.min(d, 600);
+      } else if (musicUrl.trim()) {
+        const d = await probeMediaDuration(musicUrl.trim(), "audio");
+        if (d > 1) musicDur = Math.min(d, 600);
+      }
+      setDurationHint(musicDur);
+
       if (bgFile) {
-        setStatus("Đang upload video nền lên JSON2Video...");
-        setProgress(8);
+        const src = URL.createObjectURL(bgFile);
+        const d = await probeMediaDuration(src, "video");
+        URL.revokeObjectURL(src);
+        if (d > 1) videoDur = d;
+      } else if (videoUrl.trim()) {
+        const d = await probeMediaDuration(videoUrl.trim(), "video");
+        if (d > 1) videoDur = d;
+      }
+      setVideoDurationHint(videoDur);
+
+      // Điểm bắt đầu ngẫu nhiên — không lấy từ đầu video
+      let seekSec = 0;
+      if (videoDur > musicDur + 0.5) {
+        const maxStart = videoDur - musicDur;
+        seekSec = Math.random() * maxStart;
+      }
+      seekSec = Math.max(0, Math.floor(seekSec * 100) / 100);
+
+      if (bgFile) {
+        setStatus(
+          `Upload video nền (cắt ngẫu nhiên ~${seekSec.toFixed(1)}s → ${(seekSec + musicDur).toFixed(1)}s)...`
+        );
+        setProgress(10);
         finalVideoUrl = await uploadToJ2V(bgFile, "temp");
       }
       if (musicFile) {
         setStatus("Đang upload nhạc lên JSON2Video...");
-        setProgress(16);
+        setProgress(18);
         finalMusicUrl = await uploadToJ2V(musicFile, "temp");
       }
 
@@ -98,7 +157,9 @@ export default function Home() {
         );
       }
 
-      setStatus("Gửi job render JSON2Video...");
+      setStatus(
+        `Gửi job 1080p · đoạn nền ngẫu nhiên từ ${seekSec.toFixed(1)}s...`
+      );
       setProgress(25);
 
       const createRes = await fetch("/api/json2video/create", {
@@ -109,7 +170,9 @@ export default function Home() {
           musicUrl: finalMusicUrl,
           songTitle,
           artist,
-          durationSec: durationHint,
+          durationSec: musicDur,
+          seekSec,
+          videoDurationSec: videoDur || undefined,
         }),
       });
       const createData = await createRes.json();
@@ -161,7 +224,7 @@ export default function Home() {
           // auto download
           const a = document.createElement("a");
           a.href = movie.url;
-          a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_720p50.mp4`;
+          a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_1080p50.mp4`;
           a.target = "_blank";
           a.rel = "noopener";
           document.body.appendChild(a);
@@ -192,7 +255,7 @@ export default function Home() {
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
               <p className="text-xs text-gray-400 truncate">
-                JSON2Video API · 720p · 50fps · nhạc gốc
+                JSON2Video API · 1080p · 50fps · nhạc gốc
               </p>
             </div>
           </div>
@@ -338,7 +401,7 @@ export default function Home() {
 
         <p className="text-xs text-gray-600 text-center leading-relaxed">
           Hệ thống dùng JSON2Video API: video nền muted + loop, nhạc gốc full chất lượng,
-          logo góc trên-trái, thanh dọc + tên/tác giả góc dưới-trái (lệch phải nhẹ), xuất 720p · 50fps · MP4.
+          logo góc trên-trái, thanh dọc + tên/tác giả góc dưới-trái (lệch phải nhẹ), xuất 1080p · 50fps · 1080p · MP4.
           Cần env <code className="text-pink-400">JSON2VIDEO_API_KEY</code> trên Vercel.
         </p>
       </main>

@@ -31,6 +31,8 @@ export async function POST(req: NextRequest) {
       artist = "",
       durationSec,
       logoUrl,
+      seekSec,
+      videoDurationSec,
     } = body as {
       videoUrl?: string;
       musicUrl?: string;
@@ -38,6 +40,8 @@ export async function POST(req: NextRequest) {
       artist?: string;
       durationSec?: number;
       logoUrl?: string;
+      seekSec?: number;
+      videoDurationSec?: number;
     };
 
     if (!videoUrl || !musicUrl) {
@@ -76,7 +80,7 @@ body{
   display:flex;
   align-items:flex-end;
   justify-content:flex-start;
-  padding:0 0 40px 40px;
+  padding:0 0 56px 56px;
 }
 .row{
   display:flex;
@@ -87,7 +91,7 @@ body{
 }
 .bar{
   width:3px;
-  height:56px; /* cố định — không đổi */
+  height:72px; /* cố định — không đổi */
   min-width:3px;
   background:#ffffff;
   border-radius:1px;
@@ -104,7 +108,7 @@ body{
 .title{
   font-family:"Be Vietnam Pro",Montserrat,Arial,sans-serif;
   font-weight:700;
-  font-size:24px;
+  font-size:32px;
   line-height:1.2;
   color:#ffffff;
   text-shadow:0 2px 8px rgba(0,0,0,.7);
@@ -117,7 +121,7 @@ body{
 .artist{
   font-family:Inter,Montserrat,Arial,sans-serif;
   font-weight:500;
-  font-size:13px;
+  font-size:18px;
   line-height:1.2;
   color:rgba(255,255,255,.92);
   text-shadow:0 1px 6px rgba(0,0,0,.55);
@@ -137,9 +141,27 @@ body{
 </div>
 </body></html>`;
 
+    // Đoạn nền ngẫu nhiên: seek trong file gốc (không lấy từ đầu)
+    let startAt = 0;
+    if (typeof seekSec === "number" && seekSec >= 0) {
+      startAt = seekSec;
+    } else if (
+      typeof videoDurationSec === "number" &&
+      videoDurationSec > dur + 0.5
+    ) {
+      const maxStart = videoDurationSec - dur;
+      startAt = Math.random() * maxStart;
+    }
+    startAt = Math.max(0, Math.floor(startAt * 100) / 100);
+    // Nếu video nền ngắn hơn nhạc thì loop; còn lại chơi 1 đoạn seek..seek+dur
+    const bgLoop =
+      typeof videoDurationSec === "number" && videoDurationSec > 0 && videoDurationSec < dur
+        ? -1
+        : 1;
+
     const movie = {
       comment: "Ontop — bar fixed + title/artist vertically centered to bar",
-      resolution: "hd",
+      resolution: "full-hd",
       fps: 50,
       quality: "high",
       cache: false,
@@ -153,9 +175,9 @@ body{
         {
           type: "image",
           src: logo,
-          x: 36,
-          y: 24,
-          width: 180,
+          x: 48,
+          y: 32,
+          width: 260,
           duration: -2,
           cache: true,
         },
@@ -163,9 +185,9 @@ body{
           type: "html",
           html: lowerHtml,
           x: 0,
-          y: 560,
-          width: 1280,
-          height: 160,
+          y: 860,
+          width: 1920,
+          height: 220,
           duration: -2,
           cache: false,
           wait: 0.3,
@@ -179,10 +201,11 @@ body{
               type: "video",
               src: videoUrl,
               muted: true,
-              loop: -1,
-              duration: -2,
+              loop: bgLoop,
+              duration: dur,
               volume: 0,
               resize: "cover",
+              seek: startAt,
             },
           ],
         },
