@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 
 const API = "https://api.json2video.com/v2";
 
+function esc(s: string) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 export async function POST(req: NextRequest) {
   const key = process.env.JSON2VIDEO_API_KEY;
   if (!key) {
@@ -50,18 +58,88 @@ export async function POST(req: NextRequest) {
       .slice(0, 90);
     const artistText = String(artist || "").toUpperCase().slice(0, 60);
 
-    // Thanh dọc trắng trước cụm chữ (góc dưới-trái)
-    const barHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
+    /**
+     * Một block HTML duy nhất:
+     * - Thanh dọc cố định bên trái
+     * - Cụm tên + tác giả căn giữa theo chiều dọc với thanh dọc (align-items: center)
+     * - Đặt góc dưới-trái canvas 1280x720
+     */
+    const lowerHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <style>
-html,body{margin:0;padding:0;width:100%;height:100%;background:transparent;overflow:hidden}
-.bar{width:3px;height:64px;background:#ffffff;border-radius:1px;
-box-shadow:0 0 6px rgba(0,0,0,.45)}
-</style></head><body><div class="bar"></div></body></html>`;
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{
+  width:100%;height:100%;
+  background:transparent!important;
+  overflow:hidden;
+}
+body{
+  display:flex;
+  align-items:flex-end;
+  justify-content:flex-start;
+  padding:0 0 40px 40px;
+}
+.row{
+  display:flex;
+  flex-direction:row;
+  align-items:center; /* tên + tác giả căn giữa với thanh dọc */
+  gap:12px;
+  max-width:90%;
+}
+.bar{
+  width:3px;
+  height:56px; /* cố định — không đổi */
+  min-width:3px;
+  background:#ffffff;
+  border-radius:1px;
+  flex-shrink:0;
+  box-shadow:0 0 6px rgba(0,0,0,.4);
+}
+.col{
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  gap:4px;
+  min-width:0;
+}
+.title{
+  font-family:"Be Vietnam Pro",Montserrat,Arial,sans-serif;
+  font-weight:700;
+  font-size:24px;
+  line-height:1.2;
+  color:#ffffff;
+  text-shadow:0 2px 8px rgba(0,0,0,.7);
+  text-transform:uppercase;
+  letter-spacing:.02em;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.artist{
+  font-family:Inter,Montserrat,Arial,sans-serif;
+  font-weight:500;
+  font-size:13px;
+  line-height:1.2;
+  color:rgba(255,255,255,.92);
+  text-shadow:0 1px 6px rgba(0,0,0,.55);
+  text-transform:uppercase;
+  letter-spacing:.12em;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+</style></head><body>
+<div class="row">
+  <div class="bar"></div>
+  <div class="col">
+    <div class="title">${esc(titleText)}</div>
+    <div class="artist">${esc(artistText)}</div>
+  </div>
+</div>
+</body></html>`;
 
-    // Layout gốc commit d66f23b + thanh dọc + tên đậm hơn
     const movie = {
-      comment: "Ontop Media Music — layout d66f23b + bar + bold title",
-      resolution: "hd", // 1280x720
+      comment: "Ontop — bar fixed + title/artist vertically centered to bar",
+      resolution: "hd",
       fps: 50,
       quality: "high",
       cache: false,
@@ -72,63 +150,25 @@ box-shadow:0 0 6px rgba(0,0,0,.45)}
           duration: dur,
           volume: 1,
         },
-        // Logo góc trên-trái (như commit đầu)
         {
           type: "image",
           src: logo,
-          x: 40,
-          y: 28,
-          width: 220,
+          x: 36,
+          y: 24,
+          width: 180,
           duration: -2,
           cache: true,
         },
-        // Thanh dọc — sát cụm chữ dưới-trái
         {
           type: "html",
-          html: barHtml,
-          x: 40,
-          y: 620,
-          width: 10,
-          height: 70,
+          html: lowerHtml,
+          x: 0,
+          y: 560,
+          width: 1280,
+          height: 160,
           duration: -2,
           cache: false,
-          wait: 0.2,
-        },
-        // Tên bài — layout gốc, font đậm hơn (700)
-        {
-          type: "text",
-          text: titleText,
-          duration: -2,
-          settings: {
-            "font-family": "Be Vietnam Pro",
-            "font-weight": "700",
-            "font-size": "28px",
-            color: "#ffffff",
-            "text-shadow": "0 2px 8px rgba(0,0,0,0.65)",
-            "text-transform": "uppercase",
-            "letter-spacing": "0.02em",
-            "vertical-position": "bottom",
-            "horizontal-position": "left",
-            padding: "0 0 58px 56px",
-          },
-        },
-        // Tác giả — y chang commit đầu
-        {
-          type: "text",
-          text: artistText,
-          duration: -2,
-          settings: {
-            "font-family": "Inter",
-            "font-weight": "500",
-            "font-size": "18px",
-            color: "rgba(255,255,255,0.92)",
-            "text-shadow": "0 1px 6px rgba(0,0,0,0.55)",
-            "text-transform": "uppercase",
-            "letter-spacing": "0.08em",
-            "vertical-position": "bottom",
-            "horizontal-position": "left",
-            padding: "0 0 34px 56px",
-          },
+          wait: 0.3,
         },
       ],
       scenes: [
