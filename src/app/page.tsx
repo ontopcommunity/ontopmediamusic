@@ -1,246 +1,211 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useState } from "react";
 
-export default function Home() {
-  const [songTitle, setSongTitle] = useState("MASHUP HOT TIKTOK - QUINVY REMIX");
-  const [artist, setArtist] = useState("OCEAN MUSIC");
-  const [musicUrl, setMusicUrl] = useState("");
-  const [videoUrl, setVideoUrl] = useState("");
-  const [musicFile, setMusicFile] = useState<File | null>(null);
-  const [bgFile, setBgFile] = useState<File | null>(null);
-  const [status, setStatus] = useState("Nhập link hoặc upload → Tạo video");
-  const [error, setError] = useState<string | null>(null);
-  const [isWorking, setIsWorking] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [outputUrl, setOutputUrl] = useState<string | null>(null);
-  const [projectId, setProjectId] = useState<string | null>(null);
-  const [durationHint, setDurationHint] = useState(30);
-  const [videoDurationHint, setVideoDurationHint] = useState(0);
+function formatDuration(sec: number) {
+  const s = Math.max(0, Math.round(sec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r.toString().padStart(2, "0")}`;
+}
 
-  const audioProbeRef = useRef<HTMLAudioElement | null>(null);
-
-  useEffect(() => {
-    // Probe duration from music URL when possible
-    if (!musicUrl.trim() && !musicFile) return;
+async function probeAudioDuration(src: string): Promise<number> {
+  return new Promise((resolve) => {
     const a = new Audio();
-    audioProbeRef.current = a;
-    const src = musicFile ? URL.createObjectURL(musicFile) : musicUrl.trim();
+    a.preload = "metadata";
     a.src = src;
     a.onloadedmetadata = () => {
-      if (isFinite(a.duration) && a.duration > 1) {
-        setDurationHint(Math.min(a.duration, 600));
-      }
-      if (musicFile) URL.revokeObjectURL(src);
+      const d = a.duration;
+      resolve(isFinite(d) && d > 0 ? d : 0);
     };
-  }, [musicUrl, musicFile]);
+    a.onerror = () => resolve(0);
+    setTimeout(() => resolve(0), 8000);
+  });
+}
 
+async function splitVertical(
+  dataUrl: string
+): Promise<{ left: Blob; right: Blob; leftUrl: string; rightUrl: string }> {
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  await new Promise<void>((res, rej) => {
+    img.onload = () => res();
+    img.onerror = () => rej(new Error("Không load được ảnh để cắt"));
+    img.src = dataUrl;
+  });
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  const half = Math.floor(w / 2);
 
-  const probeMediaDuration = (src: string, kind: "audio" | "video") =>
-    new Promise<number>((resolve) => {
-      const el = kind === "audio" ? new Audio() : document.createElement("video");
-      el.preload = "metadata";
-      el.src = src;
-      const done = (v: number) => {
-        try {
-          if (kind === "video") (el as HTMLVideoElement).removeAttribute("src");
-        } catch {}
-        resolve(v);
-      };
-      el.onloadedmetadata = () => {
-        const d = el.duration;
-        done(isFinite(d) && d > 0 ? d : 0);
-      };
-      el.onerror = () => done(0);
-      setTimeout(() => done(0), 8000);
+  const mk = (sx: number, sw: number) => {
+    const c = document.createElement("canvas");
+    c.width = sw;
+    c.height = h;
+    const ctx = c.getContext("2d")!;
+    ctx.drawImage(img, sx, 0, sw, h, 0, 0, sw, h);
+    return new Promise<Blob>((resolve, reject) => {
+      c.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
+        "image/jpeg",
+        0.95
+      );
     });
-
-  /** Upload file lên JSON2Video media qua presigned URL */
-  const uploadToJ2V = async (file: File, folder: string) => {
-    const init = await fetch("/api/json2video/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: (() => {
-          const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-          const dot = safe.lastIndexOf(".");
-          const base = dot > 0 ? safe.slice(0, dot) : safe;
-          const ext = dot > 0 ? safe.slice(dot) : "";
-          return `${base}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
-        })(),
-        contentType: file.type || "application/octet-stream",
-        size: file.size,
-        folder,
-      }),
-    });
-    const initData = await init.json();
-    if (!init.ok || !initData.uploadUrl || !initData.fileUrl) {
-      throw new Error(initData.error || "Không lấy được URL upload");
-    }
-
-    const put = await fetch(initData.uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": file.type || "application/octet-stream",
-      },
-      body: file,
-    });
-    if (!put.ok) {
-      throw new Error(`Upload file thất bại HTTP ${put.status}`);
-    }
-    return initData.fileUrl as string;
   };
 
-  const createVideo = async () => {
-    setError(null);
-    setOutputUrl(null);
-    setProjectId(null);
-    setProgress(0);
-    setIsWorking(true);
+  const left = await mk(0, half);
+  const right = await mk(half, w - half);
+  return {
+    left,
+    right,
+    leftUrl: URL.createObjectURL(left),
+    rightUrl: URL.createObjectURL(right),
+  };
+}
 
-    try {
-      let finalVideoUrl = videoUrl.trim();
-      let finalMusicUrl = musicUrl.trim();
+export default function Home() {
+  const [songTitle, setSongTitle] = useState("XIN ĐỪNG RỜI XA ANH");
+  const [artist, setArtist] = useState("MP x VH Remix");
+  const [part, setPart] = useState("P1");
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [coverUrl, setCoverUrl] = useState("");
+  const [musicFile, setMusicFile] = useState<File | null>(null);
+  const [musicUrl, setMusicUrl] = useState("");
+  const [durationSec, setDurationSec] = useState(60);
+  const [caption, setCaption] = useState(
+    "XIN ĐỪNG RỜI XA ANH - MP x VH Remix 🔥 #vinahouse #remix #xindungroixaanh #ontopmedia"
+  );
+  const [cookies, setCookies] = useState("");
+  const [status, setStatus] = useState("Nhập thông tin → Tạo ảnh Gemini → Cắt đôi → Đăng TikTok");
+  const [error, setError] = useState<string | null>(null);
+  const [isWorking, setIsWorking] = useState(false);
+  const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [leftUrl, setLeftUrl] = useState<string | null>(null);
+  const [rightUrl, setRightUrl] = useState<string | null>(null);
+  const [leftBlob, setLeftBlob] = useState<Blob | null>(null);
+  const [rightBlob, setRightBlob] = useState<Blob | null>(null);
+  const [meta, setMeta] = useState<string>("");
 
-      // Đo độ dài nhạc + video nền để cắt đoạn ngẫu nhiên
-      setStatus("Đang đo độ dài nhạc / video nền...");
-      setProgress(4);
-      let musicDur = durationHint;
-      let videoDur = videoDurationHint;
-
+  useEffect(() => {
+    (async () => {
       if (musicFile) {
         const src = URL.createObjectURL(musicFile);
-        const d = await probeMediaDuration(src, "audio");
+        const d = await probeAudioDuration(src);
         URL.revokeObjectURL(src);
-        if (d > 1) musicDur = Math.min(d, 600);
+        if (d > 1) setDurationSec(d);
       } else if (musicUrl.trim()) {
-        const d = await probeMediaDuration(musicUrl.trim(), "audio");
-        if (d > 1) musicDur = Math.min(d, 600);
+        const d = await probeAudioDuration(musicUrl.trim());
+        if (d > 1) setDurationSec(d);
       }
-      setDurationHint(musicDur);
+    })();
+  }, [musicFile, musicUrl]);
 
-      if (bgFile) {
-        const src = URL.createObjectURL(bgFile);
-        const d = await probeMediaDuration(src, "video");
-        URL.revokeObjectURL(src);
-        if (d > 1) videoDur = d;
-      } else if (videoUrl.trim()) {
-        const d = await probeMediaDuration(videoUrl.trim(), "video");
-        if (d > 1) videoDur = d;
-      }
-      setVideoDurationHint(videoDur);
+  useEffect(() => {
+    setCaption(
+      `${songTitle} - ${artist} 🔥 #vinahouse #remix #ontopmedia #${part.toLowerCase()}`
+    );
+  }, [songTitle, artist, part]);
 
-      // Điểm bắt đầu ngẫu nhiên — không lấy từ đầu video
-      let seekSec = 0;
-      if (videoDur > musicDur + 0.5) {
-        const maxStart = videoDur - musicDur;
-        seekSec = Math.random() * maxStart;
+  const createImage = async () => {
+    setError(null);
+    setResultUrl(null);
+    setLeftUrl(null);
+    setRightUrl(null);
+    setLeftBlob(null);
+    setRightBlob(null);
+    setIsWorking(true);
+    try {
+      if (!coverFile && !coverUrl.trim()) {
+        throw new Error("Cần ảnh cover (file hoặc link)");
       }
-      seekSec = Math.max(0, Math.floor(seekSec * 100) / 100);
 
-      if (bgFile) {
-        setStatus(
-          `Upload video nền (cắt ngẫu nhiên ~${seekSec.toFixed(1)}s → ${(seekSec + musicDur).toFixed(1)}s)...`
-        );
-        setProgress(10);
-        finalVideoUrl = await uploadToJ2V(bgFile, "temp");
+      let musicResolved = musicUrl.trim();
+      if (!musicFile && musicResolved) {
+        setStatus("Đang resolve link nhạc...");
+        const rr = await fetch("/api/music/resolve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: musicResolved }),
+        });
+        const rd = await rr.json();
+        if (rd.audioUrl) musicResolved = rd.audioUrl;
       }
+
+      let dur = durationSec;
       if (musicFile) {
-        setStatus("Đang upload nhạc lên JSON2Video...");
-        setProgress(18);
-        finalMusicUrl = await uploadToJ2V(musicFile, "temp");
+        const src = URL.createObjectURL(musicFile);
+        const d = await probeAudioDuration(src);
+        URL.revokeObjectURL(src);
+        if (d > 1) dur = d;
+      } else if (musicResolved) {
+        const d = await probeAudioDuration(musicResolved);
+        if (d > 1) dur = d;
+      }
+      setDurationSec(dur);
+
+      setStatus("Gemini đang chỉnh ảnh mẫu (anime + thẻ nhạc)...");
+      const fd = new FormData();
+      fd.append("songTitle", songTitle);
+      fd.append("artist", artist);
+      fd.append("part", part);
+      fd.append("durationSec", String(dur));
+      if (coverFile) fd.append("cover", coverFile);
+      if (coverUrl.trim()) fd.append("coverUrl", coverUrl.trim());
+
+      const res = await fetch("/api/gemini/generate", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok || !data.imageBase64) {
+        throw new Error(data.error || data.detail || `Gemini lỗi ${res.status}`);
       }
 
-      if (!finalVideoUrl || !finalMusicUrl) {
-        throw new Error(
-          "Cần video nền + nhạc (link công khai hoặc upload file)."
-        );
-      }
-
-      setStatus(
-        `Gửi job 1080p · đoạn nền ngẫu nhiên từ ${seekSec.toFixed(1)}s...`
+      const mime = data.mimeType || "image/png";
+      const dataUrl = `data:${mime};base64,${data.imageBase64}`;
+      setResultUrl(dataUrl);
+      setMeta(
+        `NV: ${data.character || "?"} · ${data.partLabel || part} · ${data.durationLabel || formatDuration(dur)}`
       );
-      setProgress(25);
+      setStatus("Đang cắt đôi ảnh dọc (trái / phải)...");
 
-      const createRes = await fetch("/api/json2video/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          videoUrl: finalVideoUrl,
-          musicUrl: finalMusicUrl,
-          songTitle,
-          artist,
-          durationSec: musicDur,
-          seekSec,
-          videoDurationSec: videoDur || undefined,
-        }),
-      });
-      const createData = await createRes.json();
-      if (!createRes.ok || !createData.project) {
-        throw new Error(
-          createData.error ||
-            createData.detail?.message ||
-            `Tạo job thất bại (${createRes.status})`
-        );
-      }
-
-      const project = createData.project as string;
-      setProjectId(project);
-      setStatus(`Đang render trên JSON2Video… (${project})`);
-      setProgress(35);
-
-      // Poll đến khi xong
-      const started = Date.now();
-      const maxWait = 15 * 60 * 1000; // 15 phút
-      while (Date.now() - started < maxWait) {
-        await new Promise((r) => setTimeout(r, 4000));
-        const stRes = await fetch(
-          `/api/json2video/status?project=${encodeURIComponent(project)}`
-        );
-        const stData = await stRes.json();
-        if (!stRes.ok) {
-          throw new Error(stData.error || "Lỗi poll status");
-        }
-        const movie = stData.movie || stData;
-        const st = movie.status as string;
-        const pct = typeof movie.progress === "number" ? movie.progress : null;
-        if (pct != null) {
-          setProgress(35 + Math.round((pct / 100) * 60));
-        } else {
-          setProgress((p) => Math.min(90, p + 2));
-        }
-        setStatus(`Render: ${st}${pct != null ? ` ${pct}%` : ""}…`);
-
-        if (st === "done" && movie.url) {
-          setOutputUrl(movie.url);
-          setProgress(100);
-          setStatus(
-            `✅ Xong · ${movie.duration ? Math.round(movie.duration) + "s · " : ""}${(
-              (movie.size || 0) /
-              1024 /
-              1024
-            ).toFixed(1)}MB`
-          );
-          // auto download
-          const a = document.createElement("a");
-          a.href = movie.url;
-          a.download = `${(songTitle || "video").replace(/\s+/g, "_").slice(0, 40)}_1080p50.mp4`;
-          a.target = "_blank";
-          a.rel = "noopener";
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          return;
-        }
-        if (st === "error" || st === "timeout") {
-          throw new Error(movie.message || `Render ${st}`);
-        }
-      }
-      throw new Error("Hết thời gian chờ render (15 phút). Thử lại.");
+      const split = await splitVertical(dataUrl);
+      setLeftBlob(split.left);
+      setRightBlob(split.right);
+      setLeftUrl(split.leftUrl);
+      setRightUrl(split.rightUrl);
+      setStatus("✅ Xong — xem ảnh full + 2 nửa. Có thể đăng TikTok.");
     } catch (e: any) {
       console.error(e);
-      setError(e?.message || "Lỗi không rõ");
+      setError(e?.message || "Lỗi");
       setStatus("Thất bại");
+    } finally {
+      setIsWorking(false);
+    }
+  };
+
+  const postTikTok = async () => {
+    if (!leftBlob || !rightBlob) {
+      setError("Chưa có 2 ảnh đã cắt");
+      return;
+    }
+    setIsWorking(true);
+    setError(null);
+    try {
+      setStatus("Đang đăng photo carousel lên TikTok...");
+      const fd = new FormData();
+      fd.append("caption", caption);
+      if (cookies.trim()) fd.append("cookies", cookies.trim());
+      fd.append("image1", leftBlob, "left.jpg");
+      fd.append("image2", rightBlob, "right.jpg");
+      const res = await fetch("/api/tiktok/post-photo", { method: "POST", body: fd });
+      const data = await res.json();
+      if (data.success) {
+        setStatus(`✅ Đã gửi đăng TikTok · item ${data.itemId || ""}`);
+      } else {
+        throw new Error(
+          data.error || "Đăng TikTok thất bại (cookie/API). Ảnh vẫn tải được phía trên."
+        );
+      }
+    } catch (e: any) {
+      setError(e?.message || "Post failed");
+      setStatus("Đăng TikTok thất bại — vẫn tải ảnh được");
     } finally {
       setIsWorking(false);
     }
@@ -254,156 +219,91 @@ export default function Home() {
             <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400 truncate">
-                JSON2Video API · 1080p · 50fps · nhạc gốc
-              </p>
+              <p className="text-xs text-gray-400">Gemini ảnh · Cắt đôi · Photo TikTok</p>
             </div>
           </div>
-          <div className="text-sm text-cyan-400 shrink-0">Cloud Render</div>
+          <div className="text-sm text-cyan-400 shrink-0">No video</div>
         </div>
       </header>
 
       <main className="max-w-3xl mx-auto px-4 py-8 space-y-6">
         <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
           <h2 className="text-lg font-semibold">1. Thông tin nhạc</h2>
-          <div>
-            <label className="block text-sm text-gray-400 mb-1">Tên bài</label>
-            <input
-              value={songTitle}
-              onChange={(e) => setSongTitle(e.target.value)}
-              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050]"
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-400 mb-1">Tác giả / Label</label>
-            <input
-              value={artist}
-              onChange={(e) => setArtist(e.target.value)}
-              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 focus:outline-none focus:border-[#ff0050]"
-            />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-400 mb-1">
-              Nhạc — link công khai hoặc upload file
-            </label>
-            <input
-              value={musicUrl}
-              onChange={(e) => {
-                setMusicUrl(e.target.value);
-                setMusicFile(null);
-              }}
-              placeholder="https://...mp3"
-              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 mb-2 focus:outline-none focus:border-[#ff0050]"
-            />
-            <input
-              type="file"
-              accept="audio/*,.mp3,.m4a,.wav"
-              onChange={(e) => {
-                const f = e.target.files?.[0] || null;
-                setMusicFile(f);
-                if (f) setMusicUrl("");
-              }}
-              className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#ff0050] file:text-white"
-            />
-            {musicFile && (
-              <p className="text-xs text-green-400 mt-1">
-                ✓ {musicFile.name} ({(musicFile.size / 1024 / 1024).toFixed(2)} MB)
-              </p>
-            )}
+          <input value={songTitle} onChange={(e) => setSongTitle(e.target.value)} placeholder="Tên bài"
+            className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3" />
+          <input value={artist} onChange={(e) => setArtist(e.target.value)} placeholder="Tác giả"
+            className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3" />
+          <div className="flex gap-3">
+            <input value={part} onChange={(e) => setPart(e.target.value)} placeholder="P1"
+              className="w-24 bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3" />
+            <div className="flex-1 text-sm text-gray-400 flex items-center">
+              Thời lượng: {formatDuration(durationSec)}
+            </div>
           </div>
         </section>
 
         <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
-          <h2 className="text-lg font-semibold">2. Video nền</h2>
-          <input
-            value={videoUrl}
-            onChange={(e) => {
-              setVideoUrl(e.target.value);
-              setBgFile(null);
-            }}
-            placeholder="https://...mp4 (link công khai)"
-            className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 mb-2 focus:outline-none focus:border-[#00f2ea]"
-          />
-          <input
-            type="file"
-            accept="video/*,.mp4,.webm,.mov"
-            onChange={(e) => {
-              const f = e.target.files?.[0] || null;
-              setBgFile(f);
-              if (f) setVideoUrl("");
-            }}
-            className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#00f2ea] file:text-black file:font-medium"
-          />
-          {bgFile && (
-            <p className="text-xs text-green-400">
-              ✓ {bgFile.name} ({(bgFile.size / 1024 / 1024).toFixed(2)} MB)
-            </p>
-          )}
-          <p className="text-xs text-gray-500">
-            Độ dài ước lượng: ~{Math.round(durationHint)}s (theo file nhạc)
-          </p>
+          <h2 className="text-lg font-semibold">2. Ảnh cover (trong thẻ nhạc)</h2>
+          <input value={coverUrl} onChange={(e) => { setCoverUrl(e.target.value); setCoverFile(null); }}
+            placeholder="Link ảnh https://..." className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3" />
+          <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files?.[0] || null; setCoverFile(f); if (f) setCoverUrl(""); }}
+            className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#ff0050] file:text-white" />
+          {coverFile && <p className="text-xs text-green-400">✓ {coverFile.name}</p>}
         </section>
 
-        <button
-          onClick={createVideo}
-          disabled={isWorking}
-          className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg"
-        >
-          {isWorking ? `Đang xử lý… ${progress}%` : "Tạo video (JSON2Video)"}
-        </button>
+        <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
+          <h2 className="text-lg font-semibold">3. Nhạc (file / link)</h2>
+          <input value={musicUrl} onChange={(e) => { setMusicUrl(e.target.value); setMusicFile(null); }}
+            placeholder="Link nhạc" className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3" />
+          <input type="file" accept="audio/*,.mp3,.m4a" onChange={(e) => { const f = e.target.files?.[0] || null; setMusicFile(f); if (f) setMusicUrl(""); }}
+            className="w-full text-sm text-gray-400 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-[#00f2ea] file:text-black" />
+          {musicFile && <p className="text-xs text-green-400">✓ {musicFile.name}</p>}
+        </section>
 
-        {isWorking && (
-          <div className="w-full h-2 bg-[#222] rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-[#ff0050] to-[#00f2ea] transition-all"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-        )}
+        <button onClick={createImage} disabled={isWorking}
+          className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg">
+          {isWorking ? "Đang xử lý…" : "Tạo ảnh (Gemini)"}
+        </button>
 
         <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
           {status}
-          {projectId && (
-            <div className="text-xs text-gray-600 mt-1">Project: {projectId}</div>
-          )}
+          {meta && <div className="text-xs text-gray-500 mt-1">{meta}</div>}
         </div>
 
         {error && (
-          <div className="text-sm text-red-400 bg-red-950/30 border border-red-900 rounded-xl px-4 py-3 whitespace-pre-wrap">
-            {error}
-          </div>
+          <div className="text-sm text-red-400 bg-red-950/30 border border-red-900 rounded-xl px-4 py-3 whitespace-pre-wrap">{error}</div>
         )}
 
-        {outputUrl && (
+        {resultUrl && (
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
-            <h2 className="text-lg font-semibold">Video đã render</h2>
-            <video
-              src={outputUrl}
-              controls
-              playsInline
-              className="w-full rounded-xl bg-black max-h-96"
-              onLoadedMetadata={(e) => {
-                try {
-                  e.currentTarget.playbackRate = 1;
-                } catch {}
-              }}
-            />
-            <a
-              href={outputUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block text-center py-3 rounded-xl bg-[#ff0050] font-medium"
-            >
-              Mở / Tải MP4
-            </a>
+            <h2 className="text-lg font-semibold">Ảnh Gemini (full)</h2>
+            <img src={resultUrl} alt="result" className="w-full rounded-xl" />
+            <a href={resultUrl} download="ontop-full.png" className="block text-center py-2 rounded-xl bg-[#333] text-sm">Tải ảnh full</a>
           </section>
         )}
 
-        <p className="text-xs text-gray-600 text-center leading-relaxed">
-          Hệ thống dùng JSON2Video API: video nền muted + loop, nhạc gốc full chất lượng,
-          logo góc trên-trái, thanh dọc + tên/tác giả góc dưới-trái (lệch phải nhẹ), xuất 1080p · 50fps · 1080p · MP4.
-          Cần env <code className="text-pink-400">JSON2VIDEO_API_KEY</code> trên Vercel.
-        </p>
+        {(leftUrl || rightUrl) && (
+          <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
+            <h2 className="text-lg font-semibold">Cắt đôi dọc</h2>
+            <div className="grid grid-cols-2 gap-3">
+              {leftUrl && <div><p className="text-xs text-gray-500 mb-1">Trái</p><img src={leftUrl} alt="left" className="w-full rounded-lg" /></div>}
+              {rightUrl && <div><p className="text-xs text-gray-500 mb-1">Phải</p><img src={rightUrl} alt="right" className="w-full rounded-lg" /></div>}
+            </div>
+          </section>
+        )}
+
+        {leftBlob && rightBlob && (
+          <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
+            <h2 className="text-lg font-semibold">Đăng TikTok (photo lướt)</h2>
+            <textarea value={caption} onChange={(e) => setCaption(e.target.value)} rows={3}
+              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 text-sm" />
+            <textarea value={cookies} onChange={(e) => setCookies(e.target.value)} rows={2}
+              placeholder="Cookie TikTok (sessionid...) — hoặc env TIKTOK_COOKIES"
+              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 text-xs text-gray-400" />
+            <button onClick={postTikTok} disabled={isWorking}
+              className="w-full py-3 rounded-xl font-bold bg-[#ff0050] disabled:opacity-50">Đăng TikTok</button>
+          </section>
+        )}
       </main>
     </div>
   );
