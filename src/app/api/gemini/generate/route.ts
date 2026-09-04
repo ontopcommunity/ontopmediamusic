@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-const GEMINI_MODEL = "gemini-3.1-flash-image";
+const GEMINI_MODELS = ["gemini-3.1-flash-image", "gemini-2.5-flash-image", "gemini-3-pro-image"];
 
 const ANIME_CHARS = [
   "Son Goku (Dragon Ball) with spiky black hair",
@@ -128,7 +128,7 @@ export async function POST(req: NextRequest) {
       character,
     });
 
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`;
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODELS[0]}:generateContent?key=${encodeURIComponent(key)}`;
 
     const body = {
       contents: [
