@@ -218,23 +218,24 @@ export default function Home() {
       }
       setDurationSec(dur);
 
-      setStatus("Đang ghép ảnh mẫu + cover + chữ (layout 100%)...");
-      const coverSrc = coverFile
-        ? URL.createObjectURL(coverFile)
-        : coverUrl.trim();
+      setStatus("Cloudflare AI đang tạo ảnh...");
+      const fd = new FormData();
+      fd.append("songTitle", songTitle);
+      fd.append("artist", artist);
+      fd.append("part", part);
+      fd.append("durationSec", String(dur));
+      if (coverFile) fd.append("cover", coverFile);
+      if (coverUrl.trim()) fd.append("coverUrl", coverUrl.trim());
 
-      const { dataUrl } = await compositeTemplate({
-        templateUrl: "/template-music-card.png",
-        coverSrc,
-        songTitle,
-        artist,
-        part,
-        durationLabel: formatDuration(dur),
-      });
-      if (coverFile) URL.revokeObjectURL(coverSrc);
-
+      const res = await fetch("/api/gemini/generate", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok || !data.imageBase64) {
+        throw new Error(data.error || `Tạo ảnh thất bại (${res.status})`);
+      }
+      const mime = data.mimeType || "image/png";
+      const dataUrl = `data:${mime};base64,${data.imageBase64}`;
       setResultUrl(dataUrl);
-      setMeta(`Layout mẫu · ${part} · ${formatDuration(dur)}`);
+      setMeta(`${data.provider}/${data.model || ""} · ${data.character || ""} · ${part}`);
       setStatus("Đang cắt đôi ảnh dọc...");
 
       const split = await splitVertical(dataUrl);
@@ -291,7 +292,7 @@ export default function Home() {
             <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400">Ghép ảnh mẫu 100% · Cắt đôi · TikTok</p>
+              <p className="text-xs text-gray-400">Cloudflare SDXL · Cắt đôi · TikTok</p>
             </div>
           </div>
           <div className="text-sm text-cyan-400 shrink-0">Template</div>
@@ -334,7 +335,7 @@ export default function Home() {
 
         <button onClick={createImage} disabled={isWorking}
           className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg">
-          {isWorking ? "Đang xử lý…" : "Tạo ảnh (ghép mẫu)"}
+          {isWorking ? "Đang xử lý…" : "Tạo ảnh (Cloudflare AI)"}
         </button>
 
         <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
