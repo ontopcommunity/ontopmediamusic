@@ -23,20 +23,113 @@ async function probeAudioDuration(src: string): Promise<number> {
   });
 }
 
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Không load được ảnh: " + src.slice(0, 80)));
+    img.src = src;
+  });
+}
+
+/** Ghép đúng layout ảnh mẫu 1330x1182 */
+async function compositeTemplate(opts: {
+  templateUrl: string;
+  coverSrc: string;
+  songTitle: string;
+  artist: string;
+  part: string;
+  durationLabel: string;
+}): Promise<{ dataUrl: string; blob: Blob }> {
+  const tpl = await loadImage(opts.templateUrl);
+  const cover = await loadImage(opts.coverSrc);
+
+  const W = tpl.naturalWidth || 1330;
+  const H = tpl.naturalHeight || 1182;
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(tpl, 0, 0, W, H);
+
+  // Khung album trong thẻ nhạc (căn theo ảnh mẫu)
+  const album = { x: 800, y: 195, w: 355, h: 355 };
+
+  // Cover fit center-crop vào album
+  const scale = Math.max(album.w / cover.naturalWidth, album.h / cover.naturalHeight);
+  const sw = album.w / scale;
+  const sh = album.h / scale;
+  const sx = (cover.naturalWidth - sw) / 2;
+  const sy = (cover.naturalHeight - sh) / 2;
+  ctx.save();
+  // rounded-ish clip for album
+  const r = 12;
+  ctx.beginPath();
+  ctx.moveTo(album.x + r, album.y);
+  ctx.arcTo(album.x + album.w, album.y, album.x + album.w, album.y + album.h, r);
+  ctx.arcTo(album.x + album.w, album.y + album.h, album.x, album.y + album.h, r);
+  ctx.arcTo(album.x, album.y + album.h, album.x, album.y, r);
+  ctx.arcTo(album.x, album.y, album.x + album.w, album.y, r);
+  ctx.closePath();
+  ctx.clip();
+  ctx.drawImage(cover, sx, sy, sw, sh, album.x, album.y, album.w, album.h);
+  ctx.restore();
+
+  // Đè vùng chữ dưới album
+  const textX = album.x;
+  const textY = album.y + album.h + 12;
+  const textW = album.w;
+  const textH = 100;
+  ctx.fillStyle = "rgba(8,8,10,0.92)";
+  ctx.fillRect(textX, textY, textW, textH);
+
+  // Title
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "700 26px Arial, Helvetica, sans-serif";
+  ctx.textBaseline = "top";
+  const title = opts.songTitle.toUpperCase().slice(0, 40);
+  ctx.fillText(title, textX + 10, textY + 10, textW - 20);
+
+  // Artist
+  ctx.fillStyle = "rgba(220,220,220,0.95)";
+  ctx.font = "500 16px Arial, Helvetica, sans-serif";
+  ctx.fillText(opts.artist.toUpperCase().slice(0, 36), textX + 10, textY + 44, textW - 20);
+
+  // Duration bar labels
+  ctx.fillStyle = "rgba(160,160,160,0.95)";
+  ctx.font = "13px Arial, Helvetica, sans-serif";
+  ctx.fillText("0:00", textX + 10, textY + 72);
+  const dur = opts.durationLabel;
+  const dw = ctx.measureText(dur).width;
+  ctx.fillText(dur, textX + textW - 10 - dw, textY + 72);
+
+  // Part badge góc trên-trái (đè lên chữ cũ)
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.fillRect(30, 20, 240, 150);
+  ctx.fillStyle = "#ffe566";
+  ctx.shadowColor = "#ffaa00";
+  ctx.shadowBlur = 12;
+  ctx.font = "700 32px Arial, Helvetica, sans-serif";
+  ctx.fillText("Nhạc Hay VL", 48, 40);
+  ctx.font = "800 68px Arial, Helvetica, sans-serif";
+  ctx.fillText(opts.part.slice(0, 6), 55, 95);
+  ctx.shadowBlur = 0;
+
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.93);
+  const blob: Blob = await new Promise((res, rej) =>
+    canvas.toBlob((b) => (b ? res(b) : rej(new Error("toBlob fail"))), "image/jpeg", 0.93)
+  );
+  return { dataUrl, blob };
+}
+
 async function splitVertical(
   dataUrl: string
 ): Promise<{ left: Blob; right: Blob; leftUrl: string; rightUrl: string }> {
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  await new Promise<void>((res, rej) => {
-    img.onload = () => res();
-    img.onerror = () => rej(new Error("Không load được ảnh để cắt"));
-    img.src = dataUrl;
-  });
+  const img = await loadImage(dataUrl);
   const w = img.naturalWidth;
   const h = img.naturalHeight;
   const half = Math.floor(w / 2);
-
   const mk = (sx: number, sw: number) => {
     const c = document.createElement("canvas");
     c.width = sw;
@@ -44,14 +137,9 @@ async function splitVertical(
     const ctx = c.getContext("2d")!;
     ctx.drawImage(img, sx, 0, sw, h, 0, 0, sw, h);
     return new Promise<Blob>((resolve, reject) => {
-      c.toBlob(
-        (b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
-        "image/jpeg",
-        0.95
-      );
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/jpeg", 0.95);
     });
   };
-
   const left = await mk(0, half);
   const right = await mk(half, w - half);
   return {
@@ -72,10 +160,10 @@ export default function Home() {
   const [musicUrl, setMusicUrl] = useState("");
   const [durationSec, setDurationSec] = useState(60);
   const [caption, setCaption] = useState(
-    "XIN ĐỪNG RỜI XA ANH - MP x VH Remix 🔥 #vinahouse #remix #xindungroixaanh #ontopmedia"
+    "XIN ĐỪNG RỜI XA ANH - MP x VH Remix 🔥 #vinahouse #remix #ontopmedia"
   );
   const [cookies, setCookies] = useState("");
-  const [status, setStatus] = useState("Nhập thông tin → Tạo ảnh Gemini → Cắt đôi → Đăng TikTok");
+  const [status, setStatus] = useState("Nhập thông tin → Ghép ảnh mẫu → Cắt đôi → Đăng TikTok");
   const [error, setError] = useState<string | null>(null);
   const [isWorking, setIsWorking] = useState(false);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
@@ -83,7 +171,7 @@ export default function Home() {
   const [rightUrl, setRightUrl] = useState<string | null>(null);
   const [leftBlob, setLeftBlob] = useState<Blob | null>(null);
   const [rightBlob, setRightBlob] = useState<Blob | null>(null);
-  const [meta, setMeta] = useState<string>("");
+  const [meta, setMeta] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -118,59 +206,43 @@ export default function Home() {
         throw new Error("Cần ảnh cover (file hoặc link)");
       }
 
-      let musicResolved = musicUrl.trim();
-      if (!musicFile && musicResolved) {
-        setStatus("Đang resolve link nhạc...");
-        const rr = await fetch("/api/music/resolve", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: musicResolved }),
-        });
-        const rd = await rr.json();
-        if (rd.audioUrl) musicResolved = rd.audioUrl;
-      }
-
       let dur = durationSec;
       if (musicFile) {
         const src = URL.createObjectURL(musicFile);
         const d = await probeAudioDuration(src);
         URL.revokeObjectURL(src);
         if (d > 1) dur = d;
-      } else if (musicResolved) {
-        const d = await probeAudioDuration(musicResolved);
+      } else if (musicUrl.trim()) {
+        const d = await probeAudioDuration(musicUrl.trim());
         if (d > 1) dur = d;
       }
       setDurationSec(dur);
 
-      setStatus("Đang tạo ảnh free API ảnh mẫu (anime + thẻ nhạc)...");
-      const fd = new FormData();
-      fd.append("songTitle", songTitle);
-      fd.append("artist", artist);
-      fd.append("part", part);
-      fd.append("durationSec", String(dur));
-      if (coverFile) fd.append("cover", coverFile);
-      if (coverUrl.trim()) fd.append("coverUrl", coverUrl.trim());
+      setStatus("Đang ghép ảnh mẫu + cover + chữ (layout 100%)...");
+      const coverSrc = coverFile
+        ? URL.createObjectURL(coverFile)
+        : coverUrl.trim();
 
-      const res = await fetch("/api/gemini/generate", { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok || !data.imageBase64) {
-        throw new Error(data.error || data.detail || `Gemini lỗi ${res.status}`);
-      }
+      const { dataUrl } = await compositeTemplate({
+        templateUrl: "/template-music-card.png",
+        coverSrc,
+        songTitle,
+        artist,
+        part,
+        durationLabel: formatDuration(dur),
+      });
+      if (coverFile) URL.revokeObjectURL(coverSrc);
 
-      const mime = data.mimeType || "image/png";
-      const dataUrl = `data:${mime};base64,${data.imageBase64}`;
       setResultUrl(dataUrl);
-      setMeta(
-        `NV: ${data.character || "?"} · ${data.partLabel || part} · ${data.durationLabel || formatDuration(dur)}`
-      );
-      setStatus("Đang cắt đôi ảnh dọc (trái / phải)...");
+      setMeta(`Layout mẫu · ${part} · ${formatDuration(dur)}`);
+      setStatus("Đang cắt đôi ảnh dọc...");
 
       const split = await splitVertical(dataUrl);
       setLeftBlob(split.left);
       setRightBlob(split.right);
       setLeftUrl(split.leftUrl);
       setRightUrl(split.rightUrl);
-      setStatus("✅ Xong — xem ảnh full + 2 nửa. Có thể đăng TikTok.");
+      setStatus("✅ Xong — layout ảnh mẫu, đã thay cover + chữ. Có thể đăng TikTok.");
     } catch (e: any) {
       console.error(e);
       setError(e?.message || "Lỗi");
@@ -200,7 +272,7 @@ export default function Home() {
         setStatus(`✅ Đã gửi đăng TikTok · item ${data.itemId || ""}`);
       } else {
         throw new Error(
-          data.error || "Đăng TikTok thất bại (cookie/API). Ảnh vẫn tải được phía trên."
+          data.error || "Đăng TikTok thất bại. Ảnh vẫn tải được phía trên."
         );
       }
     } catch (e: any) {
@@ -219,10 +291,10 @@ export default function Home() {
             <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400">Pollinations ảnh · Cắt đôi · Photo TikTok</p>
+              <p className="text-xs text-gray-400">Ghép ảnh mẫu 100% · Cắt đôi · TikTok</p>
             </div>
           </div>
-          <div className="text-sm text-cyan-400 shrink-0">No video</div>
+          <div className="text-sm text-cyan-400 shrink-0">Template</div>
         </div>
       </header>
 
@@ -252,7 +324,7 @@ export default function Home() {
         </section>
 
         <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
-          <h2 className="text-lg font-semibold">3. Nhạc (file / link)</h2>
+          <h2 className="text-lg font-semibold">3. Nhạc (file / link) — đo thời lượng</h2>
           <input value={musicUrl} onChange={(e) => { setMusicUrl(e.target.value); setMusicFile(null); }}
             placeholder="Link nhạc" className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3" />
           <input type="file" accept="audio/*,.mp3,.m4a" onChange={(e) => { const f = e.target.files?.[0] || null; setMusicFile(f); if (f) setMusicUrl(""); }}
@@ -262,7 +334,7 @@ export default function Home() {
 
         <button onClick={createImage} disabled={isWorking}
           className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg">
-          {isWorking ? "Đang xử lý…" : "Tạo ảnh (Free API)"}
+          {isWorking ? "Đang xử lý…" : "Tạo ảnh (ghép mẫu)"}
         </button>
 
         <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
@@ -276,9 +348,9 @@ export default function Home() {
 
         {resultUrl && (
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
-            <h2 className="text-lg font-semibold">Ảnh đã tạo (full)</h2>
+            <h2 className="text-lg font-semibold">Ảnh đã ghép (full)</h2>
             <img src={resultUrl} alt="result" className="w-full rounded-xl" />
-            <a href={resultUrl} download="ontop-full.png" className="block text-center py-2 rounded-xl bg-[#333] text-sm">Tải ảnh full</a>
+            <a href={resultUrl} download="ontop-full.jpg" className="block text-center py-2 rounded-xl bg-[#333] text-sm">Tải ảnh full</a>
           </section>
         )}
 
@@ -304,6 +376,11 @@ export default function Home() {
               className="w-full py-3 rounded-xl font-bold bg-[#ff0050] disabled:opacity-50">Đăng TikTok</button>
           </section>
         )}
+
+        <p className="text-xs text-gray-600 text-center leading-relaxed">
+          Giữ nguyên ảnh mẫu (nhân vật + nền + khung thẻ). Chỉ thay ảnh trong thẻ, tên bài, tác giả, thời lượng và P1.
+          Muốn đổi nhân vật anime ngẫu nhiên cần API edit thật (Gemini có quota / Flux Kontext trả phí).
+        </p>
       </main>
     </div>
   );
