@@ -292,7 +292,7 @@ export default function Home() {
             <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400">Cloudflare SDXL · Cắt đôi · TikTok</p>
+              <p className="text-xs text-gray-400">CF Inpainting · Cắt đôi · TikTok</p>
             </div>
           </div>
           <div className="text-sm text-cyan-400 shrink-0">Template</div>
@@ -335,7 +335,7 @@ export default function Home() {
 
         <button onClick={createImage} disabled={isWorking}
           className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg">
-          {isWorking ? "Đang xử lý…" : "Tạo ảnh (Cloudflare AI)"}
+          {isWorking ? "Đang xử lý…" : "Tạo ảnh (Inpainting CF)"}
         </button>
 
         <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">

@@ -5,22 +5,7 @@ export const maxDuration = 120;
 
 const CF_ACCOUNT = process.env.CF_ACCOUNT_ID || "";
 const CF_TOKEN = process.env.CF_API_TOKEN || "";
-const CF_MODEL =
-  process.env.CF_IMAGE_MODEL ||
-  "@cf/stabilityai/stable-diffusion-xl-base-1.0";
-
-const ANIME = [
-  "handsome anime young man with black wavy hair, black ornate coat with gold chains",
-  "anime Naruto-style blonde spiky hair young man, orange and black outfit",
-  "anime Goku-style spiky black hair young man, martial arts gi",
-  "anime girl with long silver hair, elegant dark dress with gold jewelry",
-  "anime girl with pink twin tails, stylish streetwear",
-  "anime boy with white hair, modern black jacket",
-];
-
-function pickAnime() {
-  return ANIME[Math.floor(Math.random() * ANIME.length)];
-}
+const MODEL = "@cf/runwayml/stable-diffusion-v1-5-inpainting";
 
 function formatDuration(sec: number) {
   const s = Math.max(0, Math.round(sec));
@@ -29,82 +14,68 @@ function formatDuration(sec: number) {
   return `${m}:${r.toString().padStart(2, "0")}`;
 }
 
-function buildPrompt(opts: {
-  songTitle: string;
-  artist: string;
-  part: string;
-  durationLabel: string;
-  character: string;
-  hasCoverHint: boolean;
-}) {
-  const { songTitle, artist, part, durationLabel, character, hasCoverHint } =
-    opts;
-  const cover = hasCoverHint
-    ? "album cover photo of the exact person from the user reference (young Asian look), photorealistic face,"
-    : "album cover photo of a young Asian woman with light brown hair in a soft pink dress,";
-  return [
-    "Cinematic anime music promo poster, ultra detailed 4K,",
-    `LEFT: ${character}, looking back over shoulder, one hand extended holding a floating smartphone-sized black music player card,`,
-    "dramatic black background with golden particle energy spirals and stars,",
-    `top-left glowing gold text "Nhạc Hay VL" and large glowing part badge "${part}",`,
-    "RIGHT: floating black rounded TikTok Music player card,",
-    "ONTOP MEDIA MUSIC logo and TikTok Music logo on the card,",
-    cover,
-    `song title on card: "${songTitle}",`,
-    `artist subtitle: "${artist}",`,
-    `progress bar from 0:00 to ${durationLabel},`,
-    "play controls, waveform, sharp readable text, no watermark",
-  ].join(" ");
+/** Tạo PNG mask 512x512: trắng = vùng sửa (album + chữ + P1) */
+async function buildMaskPng(): Promise<Buffer> {
+  // Dùng SVG → raster qua Cloudflare không có; tạo PNG thô tối giản bằng raw IHDR không đủ.
+  // Serverless: fetch mask tĩnh từ public nếu có, hoặc tạo bằng pure bytes.
+  // Ưu tiên file public/mask-inpaint.png; fallback vẽ bằng response từ sharp-free path.
+  const originMask = await fetch(
+    `${process.env.VERCEL_URL ? "https://" + process.env.VERCEL_URL : "https://ontopmediamusic.vercel.app"}/mask-inpaint.png`
+  ).catch(() => null);
+
+  // Tạo mask bằng canvas-like approach: encode minimal PNG with pure JS is hard.
+  // Embed precomputed mask as base64 constant (512x512, white rects).
+  // Generated offline: white on album + text + part badge.
+  const fixed = process.env.INPAINT_MASK_B64;
+  if (fixed) return Buffer.from(fixed, "base64");
+
+  // Fallback: try public path relative
+  try {
+    const fs = await import("fs");
+    const path = await import("path");
+    const p = path.join(process.cwd(), "public", "mask-inpaint.png");
+    if (fs.existsSync(p)) return fs.readFileSync(p);
+  } catch {}
+
+  if (originMask && originMask.ok) {
+    return Buffer.from(await originMask.arrayBuffer());
+  }
+
+  throw new Error("Thiếu mask-inpaint.png trong public/");
 }
 
-async function cfGenerate(prompt: string, negative: string) {
-  if (!CF_ACCOUNT || !CF_TOKEN) {
-    throw new Error("Thiếu CF_ACCOUNT_ID hoặc CF_API_TOKEN trên server");
+async function loadTemplatePng(origin: string): Promise<Buffer> {
+  const res = await fetch(`${origin}/template-music-card.png`);
+  if (!res.ok) throw new Error("Không tải được ảnh mẫu");
+  // Resize to 512 on the fly if sharp available; else send original (API accepts and may resize)
+  const buf = Buffer.from(await res.arrayBuffer());
+  try {
+    const sharp = (await import("sharp")).default;
+    return await sharp(buf).resize(512, 512, { fit: "fill" }).png().toBuffer();
+  } catch {
+    return buf;
   }
-  const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/${CF_MODEL}`;
+}
 
-  // Prefer lightning if SDXL capacity exceeded
-  const models = [
-    CF_MODEL,
-    "@cf/bytedance/stable-diffusion-xl-lightning",
-    "@cf/stabilityai/stable-diffusion-xl-base-1.0",
-  ];
-  let lastErr = "";
-  for (const model of models) {
-    const endpoint = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/${model}`;
-    const isLightning = model.includes("lightning");
-    const body = {
-      prompt,
-      negative_prompt: negative,
-      num_steps: isLightning ? 4 : 16,
-      guidance: isLightning ? 1 : 7.5,
-      width: 1024,
-      height: 1024,
-    };
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${CF_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (!res.ok) {
-      lastErr = buf.toString("utf8").slice(0, 300);
-      continue;
-    }
-    if (buf.length < 10000) {
-      lastErr = "Cloudflare trả về ảnh quá nhỏ / capacity";
-      continue;
-    }
-    return { buf, model, mime: "image/png" };
-  }
-  throw new Error(lastErr || "Cloudflare image failed");
+function buildPrompt(songTitle: string, artist: string, part: string, durationLabel: string) {
+  return [
+    "Keep the exact same overall image composition outside the masked area.",
+    "In the masked album area: photorealistic young Asian woman, light brown hair, soft pink dress, clear face,",
+    `below the photo white UI text song title "${songTitle}" and artist "${artist}",`,
+    `duration 0:00 to ${durationLabel}, part badge ${part},`,
+    "sharp readable text, high detail, match TikTok music card style",
+  ].join(" ");
 }
 
 export async function POST(req: NextRequest) {
   try {
+    if (!CF_ACCOUNT || !CF_TOKEN) {
+      return NextResponse.json(
+        { error: "Thiếu CF_ACCOUNT_ID / CF_API_TOKEN" },
+        { status: 500 }
+      );
+    }
+
     const form = await req.formData();
     const songTitle = String(form.get("songTitle") || "UNTITLED");
     const artist = String(form.get("artist") || "");
@@ -113,33 +84,82 @@ export async function POST(req: NextRequest) {
     const durationLabel = formatDuration(durationSec);
     const coverFile = form.get("cover") as File | null;
     const coverUrl = String(form.get("coverUrl") || "").trim();
-    const character = pickAnime();
-    const hasCover = !!(coverFile && coverFile.size > 0) || coverUrl.startsWith("http");
 
-    const prompt = buildPrompt({
-      songTitle,
-      artist,
-      part,
-      durationLabel,
-      character,
-      hasCoverHint: hasCover,
+    const origin = req.nextUrl.origin;
+    let imageBuf = await loadTemplatePng(origin);
+
+    // Nếu có cover: dán cover vào vùng album trước khi inpaint (giữ layout + đưa mặt người vào)
+    if ((coverFile && coverFile.size > 0) || coverUrl.startsWith("http")) {
+      try {
+        const sharp = (await import("sharp")).default;
+        let coverBuf: Buffer;
+        if (coverFile && coverFile.size > 0) {
+          coverBuf = Buffer.from(await coverFile.arrayBuffer());
+        } else {
+          const cr = await fetch(coverUrl);
+          coverBuf = Buffer.from(await cr.arrayBuffer());
+        }
+        // scale coords 1330x1182 → 512x512
+        const ax = Math.round((800 * 512) / 1330);
+        const ay = Math.round((195 * 512) / 1182);
+        const aw = Math.round((355 * 512) / 1330);
+        const ah = Math.round((355 * 512) / 1182);
+        const coverFitted = await sharp(coverBuf)
+          .resize(aw, ah, { fit: "cover" })
+          .png()
+          .toBuffer();
+        imageBuf = await sharp(imageBuf)
+          .composite([{ input: coverFitted, left: ax, top: ay }])
+          .png()
+          .toBuffer();
+      } catch {
+        // không có sharp: bỏ qua pre-paste
+      }
+    }
+
+    const maskBuf = await buildMaskPng();
+    const prompt = buildPrompt(songTitle, artist, part, durationLabel);
+
+    const body = {
+      prompt,
+      negative_prompt:
+        "blurry, lowres, watermark, deformed, extra fingers, text gibberish, different layout",
+      image: Array.from(new Uint8Array(imageBuf)),
+      mask: Array.from(new Uint8Array(maskBuf)),
+      num_steps: 20,
+      strength: 0.9,
+    };
+
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/${MODEL}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${CF_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     });
-    const negative =
-      "blurry, lowres, watermark, deformed hands, extra fingers, text gibberish, ugly, cropped, different layout";
 
-    const { buf, model, mime } = await cfGenerate(prompt, negative);
+    const out = Buffer.from(await res.arrayBuffer());
+    if (!res.ok || out.length < 10000) {
+      const msg = out.toString("utf8").slice(0, 400);
+      return NextResponse.json(
+        { error: `Inpainting failed: ${msg || res.status}` },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       success: true,
-      imageBase64: buf.toString("base64"),
-      mimeType: mime,
-      character,
+      imageBase64: out.toString("base64"),
+      mimeType: "image/png",
+      character: "(giữ pose ảnh mẫu — inpainting)",
       partLabel: part,
       durationLabel,
       songTitle,
       artist,
       provider: "cloudflare",
-      model,
+      model: MODEL,
     });
   } catch (e: any) {
     return NextResponse.json(
