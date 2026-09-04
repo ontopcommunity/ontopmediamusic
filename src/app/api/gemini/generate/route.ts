@@ -6,6 +6,30 @@ export const maxDuration = 120;
 const CF_ACCOUNT = process.env.CF_ACCOUNT_ID || "";
 const CF_TOKEN = process.env.CF_API_TOKEN || "";
 
+/** Models đã test OK trên account này */
+export const CF_MODELS = {
+  "phoenix-1.0": {
+    id: "@cf/leonardo/phoenix-1.0",
+    label: "Leonardo Phoenix 1.0",
+    kind: "binary" as const, // raw image bytes
+  },
+  "flux-1-schnell": {
+    id: "@cf/black-forest-labs/flux-1-schnell",
+    label: "Flux 1 Schnell",
+    kind: "json-b64" as const, // { result: { image: base64 } }
+  },
+  "sdxl": {
+    id: "@cf/stabilityai/stable-diffusion-xl-base-1.0",
+    label: "Stable Diffusion XL",
+    kind: "binary" as const,
+  },
+  "sdxl-lightning": {
+    id: "@cf/bytedance/stable-diffusion-xl-lightning",
+    label: "SDXL Lightning",
+    kind: "binary" as const,
+  },
+};
+
 function formatDuration(sec: number) {
   const s = Math.max(0, Math.round(sec));
   const m = Math.floor(s / 60);
@@ -20,15 +44,12 @@ const ANIME = [
   "anime girl with long silver hair, elegant dark dress with gold jewelry",
   "anime girl with pink twin tails, stylish streetwear",
   "anime boy with white hair, modern black jacket",
-  "anime girl with blue hair",
-  "anime boy with green spiked hair",
 ];
 
 function pickAnime() {
   return ANIME[Math.floor(Math.random() * ANIME.length)];
 }
 
-/** Prompt bắt AI vẽ đúng chữ trong ảnh — không overlay */
 function buildPrompt(opts: {
   songTitle: string;
   artist: string;
@@ -39,67 +60,82 @@ function buildPrompt(opts: {
   const { songTitle, artist, part, durationLabel, character } = opts;
   return [
     "Ultra detailed cinematic anime music promo poster, sharp 4K,",
-    `LEFT side: ${character}, looking back over shoulder, one hand holding a floating black smartphone-sized music player card,`,
-    "dramatic black background with golden particle energy spirals and stars,",
-    `top-left must show clearly readable glowing gold text exactly: Nhac Hay VL and large badge ${part},`,
-    "RIGHT side: floating black rounded TikTok Music style player card,",
-    "card must show ONTOP MEDIA MUSIC logo,",
-    "inside card: photorealistic album photo of a young Asian woman with light brown hair in a pink dress, clear face,",
-    `card must display sharp perfectly readable white capital letters song title exactly: ${songTitle},`,
-    `card must display sharp readable subtitle exactly: ${artist},`,
-    `card progress bar labeled 0:00 and ${durationLabel},`,
-    "all text must be crisp, legible, correctly spelled English/Vietnamese letters, no gibberish, no blurry text, no watermark",
+    `LEFT: ${character}, looking back over shoulder, hand holding floating black smartphone music card,`,
+    "dramatic black background with golden particle energy spirals,",
+    `top-left glowing gold text Nhac Hay VL and large badge ${part},`,
+    "RIGHT: floating black rounded TikTok Music player card, ONTOP MEDIA MUSIC logo,",
+    "album photo young Asian woman light brown hair pink dress clear face,",
+    `sharp readable white text song title exactly: ${songTitle},`,
+    `subtitle exactly: ${artist}, progress 0:00 to ${durationLabel},`,
+    "crisp legible letters, no gibberish text, no watermark",
   ].join(" ");
 }
 
-async function cfGenerate(prompt: string) {
-  if (!CF_ACCOUNT || !CF_TOKEN) {
-    throw new Error("Thiếu CF_ACCOUNT_ID hoặc CF_API_TOKEN");
+async function runModel(modelKey: string, prompt: string) {
+  if (!CF_ACCOUNT || !CF_TOKEN) throw new Error("Thiếu CF_ACCOUNT_ID / CF_API_TOKEN");
+
+  const meta = CF_MODELS[modelKey as keyof typeof CF_MODELS];
+  if (!meta) throw new Error("Model không hỗ trợ: " + modelKey);
+
+  const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/${meta.id}`;
+
+  let body: Record<string, unknown> = { prompt };
+  if (modelKey === "phoenix-1.0") {
+    body = { prompt, width: 1024, height: 1024 };
+  } else if (modelKey === "sdxl") {
+    body = {
+      prompt,
+      negative_prompt: "blurry text, unreadable text, gibberish, lowres, watermark, deformed",
+      num_steps: 20,
+      guidance: 9,
+      width: 1024,
+      height: 1024,
+    };
+  } else if (modelKey === "sdxl-lightning") {
+    body = {
+      prompt,
+      negative_prompt: "blurry text, gibberish, lowres, watermark",
+      num_steps: 4,
+      width: 1024,
+      height: 1024,
+    };
+  } else if (modelKey === "flux-1-schnell") {
+    body = { prompt }; // only prompt allowed
   }
 
-  const models = [
-    {
-      id: "@cf/stabilityai/stable-diffusion-xl-base-1.0",
-      body: {
-        prompt,
-        negative_prompt:
-          "blurry text, unreadable text, gibberish text, misspelled text, lowres, watermark, deformed hands, extra fingers, ugly, cropped, bad anatomy",
-        num_steps: 20,
-        guidance: 9,
-        width: 1024,
-        height: 1024,
-      },
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${CF_TOKEN}`,
+      "Content-Type": "application/json",
     },
-    {
-      id: "@cf/bytedance/stable-diffusion-xl-lightning",
-      body: {
-        prompt,
-        negative_prompt: "blurry text, unreadable text, gibberish, lowres, watermark",
-        num_steps: 4,
-        width: 1024,
-        height: 1024,
-      },
-    },
-  ];
+    body: JSON.stringify(body),
+  });
 
-  let last = "";
-  for (const m of models) {
-    const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/${m.id}`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${CF_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(m.body),
-    });
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (res.ok && buf.length > 20000) {
-      return { buf, model: m.id, mime: "image/png" as const };
-    }
-    last = buf.toString("utf8").slice(0, 300);
+  const ct = res.headers.get("content-type") || "";
+  const ab = await res.arrayBuffer();
+  const buf = Buffer.from(ab);
+
+  if (!res.ok) {
+    throw new Error(buf.toString("utf8").slice(0, 300) || `HTTP ${res.status}`);
   }
-  throw new Error(last || "Cloudflare AI failed");
+
+  if (meta.kind === "json-b64" || ct.includes("application/json")) {
+    const data = JSON.parse(buf.toString("utf8"));
+    const b64 =
+      data?.result?.image ||
+      data?.image ||
+      data?.result?.images?.[0] ||
+      null;
+    if (!b64) throw new Error("JSON không có image base64");
+    const img = Buffer.from(b64, "base64");
+    if (img.length < 5000) throw new Error("Ảnh quá nhỏ");
+    return { buf: img, model: meta.id, mime: "image/jpeg" as const, label: meta.label };
+  }
+
+  if (buf.length < 10000) throw new Error("Ảnh quá nhỏ / lỗi model");
+  const mime = ct.includes("jpeg") ? "image/jpeg" : "image/png";
+  return { buf, model: meta.id, mime: mime as "image/jpeg" | "image/png", label: meta.label };
 }
 
 export async function POST(req: NextRequest) {
@@ -110,6 +146,7 @@ export async function POST(req: NextRequest) {
     const part = String(form.get("part") || "P1");
     const durationSec = Number(form.get("durationSec") || 60);
     const durationLabel = formatDuration(durationSec);
+    const modelKey = String(form.get("model") || "phoenix-1.0");
     const character = pickAnime();
 
     const prompt = buildPrompt({
@@ -120,20 +157,39 @@ export async function POST(req: NextRequest) {
       character,
     });
 
-    const { buf, model, mime } = await cfGenerate(prompt);
+    // Thử model chọn, fallback lần lượt
+    const order = [
+      modelKey,
+      "phoenix-1.0",
+      "flux-1-schnell",
+      "sdxl",
+      "sdxl-lightning",
+    ].filter((v, i, a) => a.indexOf(v) === i);
 
-    return NextResponse.json({
-      success: true,
-      imageBase64: buf.toString("base64"),
-      mimeType: mime,
-      character,
-      partLabel: part,
-      durationLabel,
-      songTitle,
-      artist,
-      provider: "cloudflare",
-      model,
-    });
+    let lastErr = "";
+    for (const key of order) {
+      try {
+        const out = await runModel(key, prompt);
+        return NextResponse.json({
+          success: true,
+          imageBase64: out.buf.toString("base64"),
+          mimeType: out.mime,
+          character,
+          partLabel: part,
+          durationLabel,
+          songTitle,
+          artist,
+          provider: "cloudflare",
+          model: out.model,
+          modelKey: key,
+          modelLabel: out.label,
+        });
+      } catch (e: any) {
+        lastErr = e?.message || String(e);
+        console.error("model fail", key, lastErr);
+      }
+    }
+    throw new Error(lastErr || "Tất cả model thất bại");
   } catch (e: any) {
     return NextResponse.json(
       { error: e?.message || "AI generate failed" },

@@ -160,6 +160,7 @@ export default function Home() {
   const [songTitle, setSongTitle] = useState("XIN ĐỪNG RỜI XA ANH");
   const [artist, setArtist] = useState("MP x VH Remix");
   const [part, setPart] = useState("P1");
+  const [model, setModel] = useState("phoenix-1.0");
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverUrl, setCoverUrl] = useState("");
   const [musicFile, setMusicFile] = useState<File | null>(null);
@@ -226,6 +227,7 @@ export default function Home() {
       fd.append("artist", artist);
       fd.append("part", part);
       fd.append("durationSec", String(dur));
+      fd.append("model", model);
       if (coverFile) fd.append("cover", coverFile);
       if (coverUrl.trim()) fd.append("coverUrl", coverUrl.trim());
 
@@ -239,7 +241,7 @@ export default function Home() {
       const dataUrl = `data:${mime};base64,${data.imageBase64}`;
 
       setResultUrl(dataUrl);
-      setMeta(`AI thuần ${data.model || data.provider} · ${data.character || ""}`);
+      setMeta(`AI ${data.modelLabel || data.model || data.provider} · ${data.character || ""}`);
       setStatus("Đang cắt đôi dọc...");
       const split = await splitVertical(dataUrl);
       setLeftBlob(split.left);
@@ -310,6 +312,17 @@ export default function Home() {
             <div className="flex-1 text-sm text-gray-400 flex items-center">
               Thời lượng: {formatDuration(durationSec)}
             </div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 mb-1 block">Model AI (đã test OK)</label>
+            <select value={model} onChange={(e) => setModel(e.target.value)}
+              className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3">
+              <option value="phoenix-1.0">Leonardo Phoenix 1.0</option>
+              <option value="flux-1-schnell">Flux 1 Schnell</option>
+              <option value="sdxl">Stable Diffusion XL</option>
+              <option value="sdxl-lightning">SDXL Lightning (nhanh)</option>
+            </select>
+            <p className="text-[11px] text-gray-600 mt-1">Flux-2-dev: account yêu cầu multipart / timeout — chưa dùng được.</p>
           </div>
         </section>
 
