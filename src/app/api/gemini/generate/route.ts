@@ -3,13 +3,11 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-/** Free image API via Pollinations (no key). Target ≥6 images/day is fine. */
-
 const ANIME_CHARS = [
   "Son Goku from Dragon Ball with spiky black hair",
   "Naruto Uzumaki with blonde spiky hair",
   "Sasuke Uchiha with dark hair",
-  "Monkey D. Luffy with black hair and straw hat vibe",
+  "Monkey D. Luffy with black hair",
   "Ichigo Kurosaki with orange spiky hair",
   "Tanjiro Kamado with burgundy hair",
   "Gojo Satoru with white hair",
@@ -40,21 +38,55 @@ function buildPrompt(opts: {
   part: string;
   durationLabel: string;
   character: string;
+  hasCoverRef: boolean;
 }) {
-  const { songTitle, artist, part, durationLabel, character } = opts;
+  const { songTitle, artist, part, durationLabel, character, hasCoverRef } = opts;
+  const coverLine = hasCoverRef
+    ? "Inside the music card, use the exact face and appearance of the person from the REFERENCE IMAGE as the album cover photo (photorealistic, same person),"
+    : "Inside the music card, album photo of a young woman, photorealistic,";
   return [
-    "Cinematic vertical-ish promo artwork, ultra detailed 4K,",
-    "LEFT: anime character " + character + ", same pose as holding a floating phone card in open palm, looking back over shoulder,",
+    "Cinematic promo artwork, ultra detailed 4K, match music promo card layout,",
+    "LEFT: anime character " + character + ", pose holding a floating phone-sized card in open palm, looking back over shoulder,",
     "dramatic black and gold particle energy background, glowing sparks,",
     "top-left neon text 'Nhạc Hay VL' and large glowing part badge '" + part + "',",
     "RIGHT: floating black TikTok Music style player card with rounded corners,",
     "card header ONTOP MEDIA MUSIC and TikTok Music logo,",
-    "large square album photo of a young Asian woman in soft pink dress (from reference cover photo), photorealistic face,",
+    coverLine,
     "song title on card: '" + songTitle + "',",
     "subtitle: '" + artist + "',",
-    "playback bar 0:00 to " + durationLabel + ",",
-    "heart skip play buttons, waveform, high quality product shot, sharp readable text, no watermark",
+    "playback bar from 0:00 to " + durationLabel + ",",
+    "play controls and waveform, sharp readable text, no watermark, no extra logos",
   ].join(" ");
+}
+
+/** Upload file to litterbox (1h public URL) so Pollinations can fetch it */
+async function hostTempPublic(file: Blob, filename: string): Promise<string> {
+  const fd = new FormData();
+  fd.append("reqtype", "fileupload");
+  fd.append("time", "1h");
+  fd.append("fileToUpload", file, filename || "cover.jpg");
+  const res = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
+    method: "POST",
+    body: fd,
+  });
+  const text = (await res.text()).trim();
+  if (!res.ok || !text.startsWith("http")) {
+    // fallback tmpfiles.org
+    const fd2 = new FormData();
+    fd2.append("file", file, filename || "cover.jpg");
+    const r2 = await fetch("https://tmpfiles.org/api/v1/upload", {
+      method: "POST",
+      body: fd2,
+    });
+    const j = await r2.json().catch(() => ({}));
+    const u = j?.data?.url as string | undefined;
+    if (u) {
+      // tmpfiles page URL -> direct
+      return u.replace("tmpfiles.org/", "tmpfiles.org/dl/");
+    }
+    throw new Error("Không host được ảnh upload tạm: " + text.slice(0, 120));
+  }
+  return text;
 }
 
 async function pollinationsGenerate(prompt: string, refImageUrl?: string) {
@@ -88,9 +120,7 @@ async function pollinationsGenerate(prompt: string, refImageUrl?: string) {
     throw new Error(`Pollinations HTTP ${res.status}: ${t.slice(0, 200)}`);
   }
   const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length < 2000) {
-    throw new Error("Pollinations trả về dữ liệu quá nhỏ");
-  }
+  if (buf.length < 2000) throw new Error("Pollinations trả về dữ liệu quá nhỏ");
   const ct = res.headers.get("content-type") || "image/jpeg";
   return { buf, mime: ct.split(";")[0] || "image/jpeg" };
 }
@@ -104,20 +134,23 @@ export async function POST(req: NextRequest) {
     const durationSec = Number(form.get("durationSec") || 60);
     const durationLabel = formatDuration(durationSec);
     const coverFile = form.get("cover") as File | null;
-    const coverUrl = String(form.get("coverUrl") || "");
+    const coverUrl = String(form.get("coverUrl") || "").trim();
     const characterOverride = String(form.get("character") || "");
     const character = characterOverride.trim() || pickCharacter();
 
-    const origin = req.nextUrl.origin;
-    // Prefer public cover URL; if upload, we still describe in prompt
-    let refUrl = coverUrl.startsWith("http")
-      ? coverUrl.trim()
-      : `${origin}/template-music-card.png`;
-
-    // If user uploaded cover, we can't pass binary to Pollinations easily without hosting;
-    // use template as style ref + strong prompt for cover description.
-    if (coverFile && coverFile.size > 0 && !coverUrl) {
-      refUrl = `${origin}/template-music-card.png`;
+    let refUrl: string | undefined;
+    if (coverFile && coverFile.size > 0) {
+      refUrl = await hostTempPublic(
+        coverFile,
+        coverFile.name || "cover.jpg"
+      );
+    } else if (coverUrl.startsWith("http")) {
+      refUrl = coverUrl;
+    } else {
+      return NextResponse.json(
+        { error: "Cần upload ảnh cover hoặc dán link ảnh" },
+        { status: 400 }
+      );
     }
 
     const prompt = buildPrompt({
@@ -126,6 +159,7 @@ export async function POST(req: NextRequest) {
       part,
       durationLabel,
       character,
+      hasCoverRef: true,
     });
 
     const { buf, mime } = await pollinationsGenerate(prompt, refUrl);
@@ -141,6 +175,7 @@ export async function POST(req: NextRequest) {
       artist,
       provider: "pollinations",
       model: "flux",
+      refUrl,
     });
   } catch (e: any) {
     return NextResponse.json(
