@@ -169,7 +169,7 @@ export default function Home() {
     "XIN ĐỪNG RỜI XA ANH - MP x VH Remix 🔥 #vinahouse #remix #ontopmedia"
   );
   const [cookies, setCookies] = useState("");
-  const [status, setStatus] = useState("AI Cloudflare tạo ảnh → đè cover + chữ rõ → cắt đôi");
+  const [status, setStatus] = useState("AI Cloudflare tạo/sửa trong ảnh (không đè)");
   const [error, setError] = useState<string | null>(null);
   const [isWorking, setIsWorking] = useState(false);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
@@ -236,30 +236,17 @@ export default function Home() {
       }
 
       const mime = data.mimeType || "image/png";
-      let dataUrl = `data:${mime};base64,${data.imageBase64}`;
-
-      // Luôn đè cover + chữ rõ để tên/tác giả đọc được
-      setStatus("Đang chèn cover + chữ rõ lên ảnh AI...");
-      const coverSrc = coverFile ? URL.createObjectURL(coverFile) : coverUrl.trim();
-      dataUrl = await overlayCoverAndText({
-        aiDataUrl: dataUrl,
-        coverSrc,
-        songTitle,
-        artist,
-        part,
-        durationLabel: formatDuration(dur),
-      });
-      if (coverFile) URL.revokeObjectURL(coverSrc);
+      const dataUrl = `data:${mime};base64,${data.imageBase64}`;
 
       setResultUrl(dataUrl);
-      setMeta(`AI ${data.model || data.provider} · ${data.character || ""} · chữ rõ`);
+      setMeta(`AI thuần ${data.model || data.provider} · ${data.character || ""}`);
       setStatus("Đang cắt đôi dọc...");
       const split = await splitVertical(dataUrl);
       setLeftBlob(split.left);
       setRightBlob(split.right);
       setLeftUrl(split.leftUrl);
       setRightUrl(split.rightUrl);
-      setStatus("✅ Xong — AI + cover đúng + tên/tác giả rõ.");
+      setStatus("✅ Xong — ảnh AI thuần (chữ/cover do AI vẽ trong ảnh).");
     } catch (e: any) {
       console.error(e);
       setError(e?.message || "Lỗi");
@@ -303,7 +290,7 @@ export default function Home() {
             <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400">Cloudflare AI + cover/chữ rõ</p>
+              <p className="text-xs text-gray-400">Cloudflare AI (trong ảnh)</p>
             </div>
           </div>
           <div className="text-sm text-cyan-400 shrink-0">AI</div>
@@ -346,7 +333,7 @@ export default function Home() {
 
         <button onClick={createImage} disabled={isWorking}
           className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg">
-          {isWorking ? "AI đang tạo…" : "Tạo ảnh AI (Cloudflare)"}
+          {isWorking ? "AI đang tạo…" : "Tạo ảnh AI"}
         </button>
 
         <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
@@ -360,7 +347,7 @@ export default function Home() {
 
         {resultUrl && (
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
-            <h2 className="text-lg font-semibold">Ảnh AI + chữ rõ</h2>
+            <h2 className="text-lg font-semibold">Ảnh AI</h2>
             <img src={resultUrl} alt="result" className="w-full rounded-xl" />
             <a href={resultUrl} download="ontop-ai.jpg" className="block text-center py-2 rounded-xl bg-[#333] text-sm">Tải ảnh</a>
           </section>

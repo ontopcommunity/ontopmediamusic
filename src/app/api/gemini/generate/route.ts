@@ -14,20 +14,21 @@ function formatDuration(sec: number) {
 }
 
 const ANIME = [
-  "handsome anime young man black wavy hair gold chain black coat",
-  "anime Naruto blonde spiky hair orange black outfit",
-  "anime Goku spiky black hair martial arts gi",
-  "anime girl long silver hair elegant dark dress",
-  "anime girl pink twin tails streetwear",
-  "anime boy white hair modern black jacket",
-  "anime girl blue hair maid style",
-  "anime boy green spiked hair",
+  "handsome anime young man with black wavy hair, black ornate coat with gold chains",
+  "anime Naruto-style blonde spiky hair young man, orange and black outfit",
+  "anime Goku-style spiky black hair young man, martial arts gi",
+  "anime girl with long silver hair, elegant dark dress with gold jewelry",
+  "anime girl with pink twin tails, stylish streetwear",
+  "anime boy with white hair, modern black jacket",
+  "anime girl with blue hair",
+  "anime boy with green spiked hair",
 ];
 
 function pickAnime() {
   return ANIME[Math.floor(Math.random() * ANIME.length)];
 }
 
+/** Prompt bắt AI vẽ đúng chữ trong ảnh — không overlay */
 function buildPrompt(opts: {
   songTitle: string;
   artist: string;
@@ -37,76 +38,68 @@ function buildPrompt(opts: {
 }) {
   const { songTitle, artist, part, durationLabel, character } = opts;
   return [
-    "Cinematic anime music promo poster, ultra detailed sharp 4K,",
-    `LEFT: ${character}, looking back over shoulder, hand holding floating black smartphone music card,`,
-    "dramatic black background with golden particle energy spirals,",
-    `top-left glowing gold text Nhac Hay VL and large badge ${part},`,
-    "RIGHT: floating black rounded TikTok Music player card with ONTOP MEDIA MUSIC logo,",
-    "album cover photo young Asian woman light brown hair pink dress clear face,",
-    `sharp readable white text song title "${songTitle}",`,
-    `subtitle "${artist}", progress bar 0:00 to ${durationLabel},`,
-    "high quality UI, crisp letters, no watermark, no blurry text",
+    "Ultra detailed cinematic anime music promo poster, sharp 4K,",
+    `LEFT side: ${character}, looking back over shoulder, one hand holding a floating black smartphone-sized music player card,`,
+    "dramatic black background with golden particle energy spirals and stars,",
+    `top-left must show clearly readable glowing gold text exactly: Nhac Hay VL and large badge ${part},`,
+    "RIGHT side: floating black rounded TikTok Music style player card,",
+    "card must show ONTOP MEDIA MUSIC logo,",
+    "inside card: photorealistic album photo of a young Asian woman with light brown hair in a pink dress, clear face,",
+    `card must display sharp perfectly readable white capital letters song title exactly: ${songTitle},`,
+    `card must display sharp readable subtitle exactly: ${artist},`,
+    `card progress bar labeled 0:00 and ${durationLabel},`,
+    "all text must be crisp, legible, correctly spelled English/Vietnamese letters, no gibberish, no blurry text, no watermark",
   ].join(" ");
 }
 
-async function cfTextToImage(prompt: string) {
-  if (!CF_ACCOUNT || !CF_TOKEN) throw new Error("Thiếu CF_ACCOUNT_ID / CF_API_TOKEN");
+async function cfGenerate(prompt: string) {
+  if (!CF_ACCOUNT || !CF_TOKEN) {
+    throw new Error("Thiếu CF_ACCOUNT_ID hoặc CF_API_TOKEN");
+  }
 
   const models = [
-    "@cf/stabilityai/stable-diffusion-xl-base-1.0",
-    "@cf/bytedance/stable-diffusion-xl-lightning",
+    {
+      id: "@cf/stabilityai/stable-diffusion-xl-base-1.0",
+      body: {
+        prompt,
+        negative_prompt:
+          "blurry text, unreadable text, gibberish text, misspelled text, lowres, watermark, deformed hands, extra fingers, ugly, cropped, bad anatomy",
+        num_steps: 20,
+        guidance: 9,
+        width: 1024,
+        height: 1024,
+      },
+    },
+    {
+      id: "@cf/bytedance/stable-diffusion-xl-lightning",
+      body: {
+        prompt,
+        negative_prompt: "blurry text, unreadable text, gibberish, lowres, watermark",
+        num_steps: 4,
+        width: 1024,
+        height: 1024,
+      },
+    },
   ];
+
   let last = "";
-  for (const model of models) {
-    const isLightning = model.includes("lightning");
-    const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/${model}`;
+  for (const m of models) {
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/${m.id}`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${CF_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        prompt,
-        negative_prompt:
-          "blurry text, unreadable text, lowres, watermark, deformed hands, extra fingers, ugly, cropped",
-        num_steps: isLightning ? 4 : 18,
-        guidance: isLightning ? 1 : 8,
-        width: 1024,
-        height: 1024,
-      }),
+      body: JSON.stringify(m.body),
     });
     const buf = Buffer.from(await res.arrayBuffer());
     if (res.ok && buf.length > 20000) {
-      return { buf, model, mime: "image/png" as const };
+      return { buf, model: m.id, mime: "image/png" as const };
     }
-    last = buf.toString("utf8").slice(0, 280);
+    last = buf.toString("utf8").slice(0, 300);
   }
   throw new Error(last || "Cloudflare AI failed");
-}
-
-async function cfInpaint(templatePng: Buffer, maskPng: Buffer, prompt: string) {
-  const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT}/ai/run/@cf/runwayml/stable-diffusion-v1-5-inpainting`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${CF_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      prompt,
-      negative_prompt: "blurry, unreadable text, lowres, watermark, deformed",
-      image: Array.from(new Uint8Array(templatePng)),
-      mask: Array.from(new Uint8Array(maskPng)),
-      num_steps: 20,
-      strength: 0.85,
-    }),
-  });
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (!res.ok || buf.length < 10000) {
-    throw new Error(buf.toString("utf8").slice(0, 280) || `inpaint ${res.status}`);
-  }
-  return buf;
 }
 
 export async function POST(req: NextRequest) {
@@ -117,7 +110,6 @@ export async function POST(req: NextRequest) {
     const part = String(form.get("part") || "P1");
     const durationSec = Number(form.get("durationSec") || 60);
     const durationLabel = formatDuration(durationSec);
-    const mode = String(form.get("mode") || "auto"); // auto | txt2img | inpaint
     const character = pickAnime();
 
     const prompt = buildPrompt({
@@ -128,43 +120,8 @@ export async function POST(req: NextRequest) {
       character,
     });
 
-    // 1) Ưu tiên inpaint từ ảnh mẫu (giữ pose) — fallback txt2img SDXL
-    if (mode !== "txt2img") {
-      try {
-        const origin = req.nextUrl.origin;
-        const [tplRes, maskRes] = await Promise.all([
-          fetch(`${origin}/template-music-card.png`),
-          fetch(`${origin}/mask-inpaint.png`),
-        ]);
-        if (tplRes.ok && maskRes.ok) {
-          let tplBuf = Buffer.from(await tplRes.arrayBuffer());
-          const maskBuf = Buffer.from(await maskRes.arrayBuffer());
-          // resize template 512 nếu có sharp
-          try {
-            const sharp = (await import("sharp")).default;
-            tplBuf = await sharp(tplBuf).resize(512, 512, { fit: "fill" }).png().toBuffer();
-          } catch {}
-          const out = await cfInpaint(tplBuf, maskBuf, prompt);
-          return NextResponse.json({
-            success: true,
-            imageBase64: out.toString("base64"),
-            mimeType: "image/png",
-            character,
-            partLabel: part,
-            durationLabel,
-            songTitle,
-            artist,
-            provider: "cloudflare",
-            model: "@cf/runwayml/stable-diffusion-v1-5-inpainting",
-            needTextOverlay: true, // client đè cover + chữ rõ
-          });
-        }
-      } catch (e: any) {
-        console.error("inpaint fail, fallback txt2img", e?.message);
-      }
-    }
+    const { buf, model, mime } = await cfGenerate(prompt);
 
-    const { buf, model, mime } = await cfTextToImage(prompt);
     return NextResponse.json({
       success: true,
       imageBase64: buf.toString("base64"),
@@ -176,7 +133,6 @@ export async function POST(req: NextRequest) {
       artist,
       provider: "cloudflare",
       model,
-      needTextOverlay: true,
     });
   } catch (e: any) {
     return NextResponse.json(
