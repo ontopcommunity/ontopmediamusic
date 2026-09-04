@@ -142,7 +142,7 @@ export default function Home() {
       }
       setDurationSec(dur);
 
-      setStatus("Gemini đang chỉnh ảnh mẫu (anime + thẻ nhạc)...");
+      setStatus("Đang tạo ảnh free API ảnh mẫu (anime + thẻ nhạc)...");
       const fd = new FormData();
       fd.append("songTitle", songTitle);
       fd.append("artist", artist);
@@ -219,7 +219,7 @@ export default function Home() {
             <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400">Gemini ảnh · Cắt đôi · Photo TikTok</p>
+              <p className="text-xs text-gray-400">Pollinations ảnh · Cắt đôi · Photo TikTok</p>
             </div>
           </div>
           <div className="text-sm text-cyan-400 shrink-0">No video</div>
@@ -262,7 +262,7 @@ export default function Home() {
 
         <button onClick={createImage} disabled={isWorking}
           className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg">
-          {isWorking ? "Đang xử lý…" : "Tạo ảnh (Gemini)"}
+          {isWorking ? "Đang xử lý…" : "Tạo ảnh (Free API)"}
         </button>
 
         <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
@@ -276,7 +276,7 @@ export default function Home() {
 
         {resultUrl && (
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
-            <h2 className="text-lg font-semibold">Ảnh Gemini (full)</h2>
+            <h2 className="text-lg font-semibold">Ảnh đã tạo (full)</h2>
             <img src={resultUrl} alt="result" className="w-full rounded-xl" />
             <a href={resultUrl} download="ontop-full.png" className="block text-center py-2 rounded-xl bg-[#333] text-sm">Tải ảnh full</a>
           </section>
