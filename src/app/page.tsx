@@ -28,13 +28,18 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("Không load được ảnh: " + src.slice(0, 80)));
+    img.onerror = () => reject(new Error("Không load được ảnh"));
     img.src = src;
   });
 }
 
-/** Ghép đúng layout ảnh mẫu 1330x1182 */
-async function compositeTemplate(opts: {
+/**
+ * Ghép đúng ảnh mẫu full resolution:
+ * - Giữ 100% nhân vật, nền, khung thẻ
+ * - Chèn cover vào đúng khung album
+ * - Vẽ tên bài / tác giả / thời lượng / P1 rõ, đọc được
+ */
+async function compositeExact(opts: {
   templateUrl: string;
   coverSrc: string;
   songTitle: string;
@@ -51,93 +56,99 @@ async function compositeTemplate(opts: {
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext("2d")!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   ctx.drawImage(tpl, 0, 0, W, H);
 
-  // Khung album trong thẻ nhạc (căn theo ảnh mẫu)
-  const album = { x: 800, y: 195, w: 355, h: 355 };
+  // Khung album trong thẻ (căn theo ảnh mẫu 1330x1182)
+  const album = { x: 805, y: 198, w: 335, h: 335 };
+  const radius = 16;
 
-  // Cover fit center-crop vào album
+  // Center-crop cover vào album
   const scale = Math.max(album.w / cover.naturalWidth, album.h / cover.naturalHeight);
   const sw = album.w / scale;
   const sh = album.h / scale;
   const sx = (cover.naturalWidth - sw) / 2;
   const sy = (cover.naturalHeight - sh) / 2;
+
   ctx.save();
-  // rounded-ish clip for album
-  const r = 12;
   ctx.beginPath();
-  ctx.moveTo(album.x + r, album.y);
-  ctx.arcTo(album.x + album.w, album.y, album.x + album.w, album.y + album.h, r);
-  ctx.arcTo(album.x + album.w, album.y + album.h, album.x, album.y + album.h, r);
-  ctx.arcTo(album.x, album.y + album.h, album.x, album.y, r);
-  ctx.arcTo(album.x, album.y, album.x + album.w, album.y, r);
+  const { x, y, w, h } = album;
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
   ctx.closePath();
   ctx.clip();
-  ctx.drawImage(cover, sx, sy, sw, sh, album.x, album.y, album.w, album.h);
+  ctx.drawImage(cover, sx, sy, sw, sh, x, y, w, h);
   ctx.restore();
 
-  // Đè vùng chữ dưới album
-  const textX = album.x;
-  const textY = album.y + album.h + 12;
-  const textW = album.w;
-  const textH = 100;
-  ctx.fillStyle = "rgba(8,8,10,0.92)";
-  ctx.fillRect(textX, textY, textW, textH);
+  // Đè vùng chữ cũ dưới album (title / artist / duration)
+  const plateX = album.x;
+  const plateY = album.y + album.h + 8;
+  const plateW = album.w;
+  const plateH = 105;
+  ctx.fillStyle = "rgba(8, 8, 12, 0.94)";
+  ctx.fillRect(plateX, plateY, plateW, plateH);
 
-  // Title
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "700 26px Arial, Helvetica, sans-serif";
+  // Thanh progress mỏng
+  ctx.fillStyle = "rgba(60, 60, 70, 0.95)";
+  ctx.fillRect(plateX + 10, plateY + 78, plateW - 20, 4);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.fillRect(plateX + 10, plateY + 78, (plateW - 20) * 0.08, 4);
+
+  // Tên bài — chữ trắng đậm, rõ
   ctx.textBaseline = "top";
-  const title = opts.songTitle.toUpperCase().slice(0, 40);
-  ctx.fillText(title, textX + 10, textY + 10, textW - 20);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 28px Arial, Helvetica, sans-serif";
+  const title = opts.songTitle.trim().toUpperCase().slice(0, 36);
+  ctx.fillText(title, plateX + 12, plateY + 12, plateW - 24);
 
-  // Artist
-  ctx.fillStyle = "rgba(220,220,220,0.95)";
-  ctx.font = "500 16px Arial, Helvetica, sans-serif";
-  ctx.fillText(opts.artist.toUpperCase().slice(0, 36), textX + 10, textY + 44, textW - 20);
+  // Tác giả
+  ctx.fillStyle = "rgba(210, 210, 215, 0.98)";
+  ctx.font = "600 17px Arial, Helvetica, sans-serif";
+  ctx.fillText(opts.artist.trim().toUpperCase().slice(0, 40), plateX + 12, plateY + 48, plateW - 24);
 
-  // Duration bar labels
-  ctx.fillStyle = "rgba(160,160,160,0.95)";
-  ctx.font = "13px Arial, Helvetica, sans-serif";
-  ctx.fillText("0:00", textX + 10, textY + 72);
+  // Thời lượng
+  ctx.fillStyle = "rgba(160, 160, 170, 0.95)";
+  ctx.font = "14px Arial, Helvetica, sans-serif";
+  ctx.fillText("0:00", plateX + 12, plateY + 86);
   const dur = opts.durationLabel;
   const dw = ctx.measureText(dur).width;
-  ctx.fillText(dur, textX + textW - 10 - dw, textY + 72);
+  ctx.fillText(dur, plateX + plateW - 12 - dw, plateY + 86);
 
-  // Part badge góc trên-trái (đè lên chữ cũ)
-  ctx.fillStyle = "rgba(0,0,0,0.35)";
-  ctx.fillRect(30, 20, 240, 150);
+  // Badge P1 + Nhạc Hay VL (góc trên trái) — đè chữ cũ, chữ rõ
+  ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+  ctx.fillRect(28, 22, 250, 155);
+  ctx.shadowColor = "rgba(255, 180, 0, 0.85)";
+  ctx.shadowBlur = 14;
   ctx.fillStyle = "#ffe566";
-  ctx.shadowColor = "#ffaa00";
-  ctx.shadowBlur = 12;
-  ctx.font = "700 32px Arial, Helvetica, sans-serif";
+  ctx.font = "bold 30px Arial, Helvetica, sans-serif";
   ctx.fillText("Nhạc Hay VL", 48, 40);
-  ctx.font = "800 68px Arial, Helvetica, sans-serif";
-  ctx.fillText(opts.part.slice(0, 6), 55, 95);
+  ctx.font = "bold 72px Arial, Helvetica, sans-serif";
+  ctx.fillText(opts.part.trim().slice(0, 6) || "P1", 52, 90);
   ctx.shadowBlur = 0;
 
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.93);
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
   const blob: Blob = await new Promise((res, rej) =>
-    canvas.toBlob((b) => (b ? res(b) : rej(new Error("toBlob fail"))), "image/jpeg", 0.93)
+    canvas.toBlob((b) => (b ? res(b) : rej(new Error("toBlob fail"))), "image/jpeg", 0.95)
   );
   return { dataUrl, blob };
 }
 
-async function splitVertical(
-  dataUrl: string
-): Promise<{ left: Blob; right: Blob; leftUrl: string; rightUrl: string }> {
+async function splitVertical(dataUrl: string) {
   const img = await loadImage(dataUrl);
   const w = img.naturalWidth;
   const h = img.naturalHeight;
   const half = Math.floor(w / 2);
-  const mk = (sx: number, sw: number) => {
+  const mk = async (sx: number, sw: number) => {
     const c = document.createElement("canvas");
     c.width = sw;
     c.height = h;
-    const ctx = c.getContext("2d")!;
-    ctx.drawImage(img, sx, 0, sw, h, 0, 0, sw, h);
+    c.getContext("2d")!.drawImage(img, sx, 0, sw, h, 0, 0, sw, h);
     return new Promise<Blob>((resolve, reject) => {
-      c.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/jpeg", 0.95);
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob"))), "image/jpeg", 0.95);
     });
   };
   const left = await mk(0, half);
@@ -163,7 +174,7 @@ export default function Home() {
     "XIN ĐỪNG RỜI XA ANH - MP x VH Remix 🔥 #vinahouse #remix #ontopmedia"
   );
   const [cookies, setCookies] = useState("");
-  const [status, setStatus] = useState("Nhập thông tin → Ghép ảnh mẫu → Cắt đôi → Đăng TikTok");
+  const [status, setStatus] = useState("Nhập thông tin → Ghép ảnh mẫu → Cắt đôi → TikTok");
   const [error, setError] = useState<string | null>(null);
   const [isWorking, setIsWorking] = useState(false);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
@@ -218,32 +229,28 @@ export default function Home() {
       }
       setDurationSec(dur);
 
-      setStatus("Cloudflare AI đang tạo ảnh...");
-      const fd = new FormData();
-      fd.append("songTitle", songTitle);
-      fd.append("artist", artist);
-      fd.append("part", part);
-      fd.append("durationSec", String(dur));
-      if (coverFile) fd.append("cover", coverFile);
-      if (coverUrl.trim()) fd.append("coverUrl", coverUrl.trim());
+      setStatus("Đang ghép ảnh mẫu full-HD: cover + chữ rõ...");
+      const coverSrc = coverFile ? URL.createObjectURL(coverFile) : coverUrl.trim();
 
-      const res = await fetch("/api/gemini/generate", { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok || !data.imageBase64) {
-        throw new Error(data.error || `Tạo ảnh thất bại (${res.status})`);
-      }
-      const mime = data.mimeType || "image/png";
-      const dataUrl = `data:${mime};base64,${data.imageBase64}`;
+      const { dataUrl } = await compositeExact({
+        templateUrl: "/template-music-card.png",
+        coverSrc,
+        songTitle,
+        artist,
+        part,
+        durationLabel: formatDuration(dur),
+      });
+      if (coverFile) URL.revokeObjectURL(coverSrc);
+
       setResultUrl(dataUrl);
-      setMeta(`${data.provider}/${data.model || ""} · ${data.character || ""} · ${part}`);
-      setStatus("Đang cắt đôi ảnh dọc...");
-
+      setMeta(`Ghép mẫu full-res · ${part} · ${formatDuration(dur)} · chữ rõ`);
+      setStatus("Đang cắt đôi dọc...");
       const split = await splitVertical(dataUrl);
       setLeftBlob(split.left);
       setRightBlob(split.right);
       setLeftUrl(split.leftUrl);
       setRightUrl(split.rightUrl);
-      setStatus("✅ Xong — layout ảnh mẫu, đã thay cover + chữ. Có thể đăng TikTok.");
+      setStatus("✅ Xong — giữ nguyên nhân vật/nền mẫu, cover + tên/tác giả rõ.");
     } catch (e: any) {
       console.error(e);
       setError(e?.message || "Lỗi");
@@ -261,7 +268,7 @@ export default function Home() {
     setIsWorking(true);
     setError(null);
     try {
-      setStatus("Đang đăng photo carousel lên TikTok...");
+      setStatus("Đang đăng TikTok...");
       const fd = new FormData();
       fd.append("caption", caption);
       if (cookies.trim()) fd.append("cookies", cookies.trim());
@@ -270,11 +277,9 @@ export default function Home() {
       const res = await fetch("/api/tiktok/post-photo", { method: "POST", body: fd });
       const data = await res.json();
       if (data.success) {
-        setStatus(`✅ Đã gửi đăng TikTok · item ${data.itemId || ""}`);
+        setStatus(`✅ Đã gửi đăng TikTok · ${data.itemId || ""}`);
       } else {
-        throw new Error(
-          data.error || "Đăng TikTok thất bại. Ảnh vẫn tải được phía trên."
-        );
+        throw new Error(data.error || "Đăng TikTok thất bại — vẫn tải ảnh được");
       }
     } catch (e: any) {
       setError(e?.message || "Post failed");
@@ -292,10 +297,10 @@ export default function Home() {
             <img src="/logo.png" alt="Ontop" className="h-9 w-auto object-contain" />
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">Ontop Media Music</h1>
-              <p className="text-xs text-gray-400">CF Inpainting · Cắt đôi · TikTok</p>
+              <p className="text-xs text-gray-400">Ghép ảnh mẫu full-HD · Chữ rõ · Cắt đôi</p>
             </div>
           </div>
-          <div className="text-sm text-cyan-400 shrink-0">Template</div>
+          <div className="text-sm text-cyan-400 shrink-0">Exact</div>
         </div>
       </header>
 
@@ -316,7 +321,7 @@ export default function Home() {
         </section>
 
         <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
-          <h2 className="text-lg font-semibold">2. Ảnh cover (trong thẻ nhạc)</h2>
+          <h2 className="text-lg font-semibold">2. Ảnh cover (chèn vào thẻ nhạc)</h2>
           <input value={coverUrl} onChange={(e) => { setCoverUrl(e.target.value); setCoverFile(null); }}
             placeholder="Link ảnh https://..." className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3" />
           <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files?.[0] || null; setCoverFile(f); if (f) setCoverUrl(""); }}
@@ -325,7 +330,7 @@ export default function Home() {
         </section>
 
         <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-4">
-          <h2 className="text-lg font-semibold">3. Nhạc (file / link) — đo thời lượng</h2>
+          <h2 className="text-lg font-semibold">3. Nhạc (đo thời lượng thanh tua)</h2>
           <input value={musicUrl} onChange={(e) => { setMusicUrl(e.target.value); setMusicFile(null); }}
             placeholder="Link nhạc" className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3" />
           <input type="file" accept="audio/*,.mp3,.m4a" onChange={(e) => { const f = e.target.files?.[0] || null; setMusicFile(f); if (f) setMusicUrl(""); }}
@@ -335,7 +340,7 @@ export default function Home() {
 
         <button onClick={createImage} disabled={isWorking}
           className="w-full py-4 rounded-xl font-bold bg-gradient-to-r from-[#ff0050] to-[#00f2ea] disabled:opacity-50 text-lg">
-          {isWorking ? "Đang xử lý…" : "Tạo ảnh (Inpainting CF)"}
+          {isWorking ? "Đang ghép…" : "Tạo ảnh (ghép mẫu chính xác)"}
         </button>
 
         <div className="text-sm text-center text-gray-400 bg-[#141414] border border-[#262626] rounded-xl px-4 py-3">
@@ -349,7 +354,7 @@ export default function Home() {
 
         {resultUrl && (
           <section className="bg-[#141414] border border-[#262626] rounded-2xl p-6 space-y-3">
-            <h2 className="text-lg font-semibold">Ảnh đã ghép (full)</h2>
+            <h2 className="text-lg font-semibold">Ảnh đã ghép</h2>
             <img src={resultUrl} alt="result" className="w-full rounded-xl" />
             <a href={resultUrl} download="ontop-full.jpg" className="block text-center py-2 rounded-xl bg-[#333] text-sm">Tải ảnh full</a>
           </section>
@@ -371,7 +376,7 @@ export default function Home() {
             <textarea value={caption} onChange={(e) => setCaption(e.target.value)} rows={3}
               className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 text-sm" />
             <textarea value={cookies} onChange={(e) => setCookies(e.target.value)} rows={2}
-              placeholder="Cookie TikTok (sessionid...) — hoặc env TIKTOK_COOKIES"
+              placeholder="Cookie TikTok (tuỳ chọn)"
               className="w-full bg-[#0a0a0a] border border-[#333] rounded-xl px-4 py-3 text-xs text-gray-400" />
             <button onClick={postTikTok} disabled={isWorking}
               className="w-full py-3 rounded-xl font-bold bg-[#ff0050] disabled:opacity-50">Đăng TikTok</button>
@@ -379,8 +384,7 @@ export default function Home() {
         )}
 
         <p className="text-xs text-gray-600 text-center leading-relaxed">
-          Giữ nguyên ảnh mẫu (nhân vật + nền + khung thẻ). Chỉ thay ảnh trong thẻ, tên bài, tác giả, thời lượng và P1.
-          Muốn đổi nhân vật anime ngẫu nhiên cần API edit thật (Gemini có quota / Flux Kontext trả phí).
+          Giữ nguyên 100% nhân vật + nền ảnh mẫu. Chỉ thay ảnh trong thẻ, tên bài, tác giả, thời lượng và P1 bằng chữ rõ.
         </p>
       </main>
     </div>
